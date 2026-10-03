@@ -1,0 +1,17 @@
+{
+  "name": "openreef-gpu-api",
+  "version": "0.6.3-gpu.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "google-drive:authorize": "node scripts/google-drive-oauth.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260515.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.92.0"
+  }
+}

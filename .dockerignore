@@ -1,0 +1,13 @@
+.git
+.github
+.vinext
+.venv
+node_modules
+out
+tests
+**/__pycache__
+*.pyc
+.dev.vars
+.env*
+client_secret*.json
+credentials*.json

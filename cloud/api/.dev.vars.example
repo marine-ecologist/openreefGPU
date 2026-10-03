@@ -1,0 +1,6 @@
+GOOGLE_CLIENT_ID=replace-me.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=replace-me
+GOOGLE_REFRESH_TOKEN=replace-me
+GOOGLE_DRIVE_ROOT_FOLDER_ID=replace-me
+RUNPOD_ENDPOINT_ID=replace-me
+RUNPOD_API_KEY=replace-me

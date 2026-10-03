@@ -1,0 +1,54 @@
+name: Validate openreefGPU
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Fetch the pinned OpenReef desktop source
+        run: node scripts/fetch-pinned-openreef.mjs .upstream/openreef
+
+      - name: Enforce the desktop/cloud version contract
+        run: npm run check:versions -- --openreef-dir .upstream/openreef
+
+      - name: Confirm OpenReef has no newer stable release
+        run: npm run check:upstream
+
+      - name: Check changed web and API code
+        run: npx oxlint app/cloud-jobs.tsx app/page.tsx app/layout.tsx cloud/api/src
+
+      - name: Build the browser application
+        run: npm run build
+
+      - name: Validate the Cloudflare API
+        run: |
+          npm --prefix cloud/api run check
+          npx wrangler deploy --dry-run --x-autoconfig=false --config cloud/api/wrangler.jsonc --outdir /tmp/openreef-gpu-api
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test the RunPod adapter
+        run: |
+          python -m pip install -r worker/requirements-dev.txt
+          ruff check worker tests
+          pytest -q

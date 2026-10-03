@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "openreef-gpu-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:5173",
+    "REQUIRE_ACCESS": "false",
+    "STORAGE_PROVIDER": "google-drive",
+    "GOOGLE_DRIVE_JOB_ROOT": "jobs",
+    "OPENREEF_VERSION": "0.6.3",
+    "OPENREEF_GPU_VERSION": "0.6.3-gpu.1",
+  },
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "openreefGPU": {
+    "version": "0.6.3-gpu.1"
+  },
+  "openreef": {
+    "version": "0.6.3",
+    "repository": "https://github.com/marine-ecologist/openreef.git",
+    "ref": "v0.6.3",
+    "commit": "c5da966804860b500a4f5657c783d9df9de9cbfc"
+  },
+  "contracts": {
+    "jobSchema": 1,
+    "resultSchema": 1
+  }
+}
