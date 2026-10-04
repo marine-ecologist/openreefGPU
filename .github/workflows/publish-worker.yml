@@ -25,7 +25,8 @@ jobs:
         id: versions
         shell: bash
         run: |
-          echo "gpu_version=$(node -p \"require('./versions.json').openreefGpu.version\")" >> "$GITHUB_OUTPUT"
+          GPU_VERSION=$(node -p "require('./versions.json').openreefGPU.version")
+          printf 'gpu_version=%s\n' "$GPU_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Sign in to GitHub Container Registry
         uses: docker/login-action@v3
