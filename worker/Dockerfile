@@ -5,18 +5,25 @@ FROM nvidia/cuda:12.9.1-devel-ubuntu24.04 AS openmvs-builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENMVS_VERSION=v2.3.0
+ARG VCG_REF=658ba36d0a5666650da6e066b4794efc5a463407
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git ca-certificates \
+    build-essential cmake git ca-certificates python3 python3-dev \
     libboost-filesystem-dev libboost-graph-dev libboost-iostreams-dev \
     libboost-program-options-dev libboost-serialization-dev libboost-system-dev \
-    libceres-dev libcgal-dev libeigen3-dev libglfw3-dev libjpeg-dev \
-    libopencv-dev libpng-dev libtiff-dev \
+    libceres-dev libcgal-dev libeigen3-dev libglew-dev libglfw3-dev \
+    libglu1-mesa-dev libjpeg-dev libopencv-dev libpng-dev libtiff-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN git clone --branch "${OPENMVS_VERSION}" --depth 1 --recurse-submodules \
-    https://github.com/cdcseacave/openMVS.git /opt/openMVS \
+RUN git init /opt/vcglib \
+    && git -C /opt/vcglib remote add origin https://github.com/cdcseacave/VCG.git \
+    && git -C /opt/vcglib fetch --depth 1 origin "${VCG_REF}" \
+    && git -C /opt/vcglib checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/vcglib rev-parse HEAD)" = "${VCG_REF}" \
+    && git clone --branch "${OPENMVS_VERSION}" --depth 1 \
+      https://github.com/cdcseacave/openMVS.git /opt/openMVS \
     && cmake -S /opt/openMVS -B /opt/openMVS/build \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="75;86;89" \
-      -DOpenMVS_USE_CUDA=ON -DOpenMVS_BUILD_TOOLS=ON \
+      -DCUDA_CUDA_LIBRARY=/usr/local/cuda/lib64/stubs/libcuda.so \
+      -DOpenMVS_USE_CUDA=ON -DOpenMVS_BUILD_TOOLS=ON -DVCG_ROOT=/opt/vcglib \
     && cmake --build /opt/openMVS/build --parallel "$(nproc)" \
     && cmake --install /opt/openMVS/build --prefix /opt/openmvs-install
 
@@ -29,10 +36,18 @@ ARG OPENREEF_GPU_VERSION=0.6.3-gpu.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
-    libboost-iostreams-dev libboost-program-options-dev \
+    libboost-iostreams-dev libboost-program-options-dev libboost-serialization-dev \
     libceres-dev libglfw3 libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=openmvs-builder /opt/openmvs-install/ /usr/local/
+COPY --from=openmvs-builder \
+    /opt/openMVS/build/bin/InterfaceCOLMAP \
+    /opt/openMVS/build/bin/DensifyPointCloud \
+    /opt/openMVS/build/bin/ReconstructMesh \
+    /opt/openMVS/build/bin/RefineMesh \
+    /opt/openMVS/build/bin/TextureMesh \
+    /opt/openMVS/build/bin/TransformScene \
+    /usr/local/bin/
 
 RUN git init /opt/openreef \
     && git -C /opt/openreef remote add origin "${OPENREEF_REPOSITORY}" \
@@ -41,7 +56,7 @@ RUN git init /opt/openreef \
     && test "$(git -C /opt/openreef rev-parse HEAD)" = "${OPENREEF_REF}"
 RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps /opt/openreef \
     && python3 -m pip install --break-system-packages --no-cache-dir \
-      runpod==1.7.13 numpy==2.3.3 Pillow==11.3.0 opencv-python-headless==4.12.0.88 \
+      runpod==1.7.13 numpy==2.2.6 Pillow==11.3.0 opencv-python-headless==4.12.0.88 \
     && test "$(python3 -c 'import openreef; print(openreef.__version__)')" = "${OPENREEF_VERSION}"
 
 COPY worker/ /opt/openreefgpu/worker/

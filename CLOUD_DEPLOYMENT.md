@@ -37,14 +37,26 @@ This is a one-time setup for the Gmail account that will own the OpenReef files.
    - Add the `.../auth/drive.file` scope if the console asks for scopes. This lets OpenReef access
      only files and folders it creates, not the rest of My Drive.
 4. Create an OAuth client with application type **Desktop app** and download its JSON file.
-5. From `openreefGPU/cloud/api`, run:
+5. From `openreefGPU/cloud/api`, run one of these commands. The default creates a dedicated
+   `OpenReef` folder with the narrow `drive.file` permission:
 
    ```bash
    npm run google-drive:authorize -- /path/to/client_secret.json
    ```
 
-6. Open the address printed by the helper, sign in, and approve access. The helper creates an
-   `OpenReef` folder in My Drive and prints four values:
+   To reuse an existing dedicated folder such as `reefplot`, run:
+
+   ```bash
+   npm run google-drive:authorize -- /path/to/client_secret.json --folder reefplot --existing --output-env .dev.vars
+   ```
+
+   Google requires the broader Drive permission to locate and use a folder that existed before this
+   OAuth app. Use a dedicated root such as `reefplot`; the deployed API and worker are configured to
+   operate only below the returned folder ID.
+
+6. Open the address printed by the helper, sign in, and approve access. With `--output-env`, the
+   helper saves the four values below to a private, git-ignored `.dev.vars` file (mode `600`).
+   Without that option, it prints them so they can be copied directly into a secret manager:
 
    ```text
    GOOGLE_CLIENT_ID
@@ -61,15 +73,16 @@ and requests a Drive scope. That is acceptable for the first smoke test. Before 
 move the OAuth app to **Production** and review Google's publishing requirements, or expect to run
 the authorization helper again when the test token expires.
 
-OpenReef creates this layout below the generated root folder:
+For the current `reefplot` deployment, OpenReef uses this layout without moving the existing source
+photographs:
 
 ```text
-OpenReef/
+reefplot/
+├── images/                    # existing photographs
 └── jobs/
     └── <uuid>/
         ├── job.json
-        ├── input/
-        │   └── source photographs
+        ├── input/             # used only for new browser uploads
         └── output/
             ├── model.glb
             ├── flow-surface.ply       # when produced
@@ -79,8 +92,19 @@ OpenReef/
 
 ## 2. Build and publish the GPU worker
 
-Run this from the openreefGPU repository root. The image fetches the exact OpenReef desktop commit
-declared by its build arguments and verifies the installed package version:
+The recommended first deployment is the included GitHub Actions workflow. In the repository's
+**Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
+
+```text
+ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.1
+```
+
+Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
+versioned tag is the source of truth for the endpoint; `latest` is provided only for convenience.
+
+For a local build instead, run this from the openreefGPU repository root. The image fetches the
+exact OpenReef desktop commit declared by its build arguments and verifies the installed package
+version:
 
 ```bash
 docker build --platform linux/amd64 \

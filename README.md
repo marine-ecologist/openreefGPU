@@ -80,8 +80,13 @@ The Dockerfile packages OpenReef `0.6.3` from its pinned commit, CUDA COLMAP, CU
 small openreefGPU job adapter. See [CLOUD_DEPLOYMENT.md](CLOUD_DEPLOYMENT.md) for complete setup and
 the required smoke test.
 
+After the repository is published on GitHub, run the **Publish RunPod worker image** workflow. It
+publishes the pinned Linux image to GitHub Container Registry as both
+`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.1` and `:latest`, ready for a RunPod Serverless template.
+
 ## Storage
 
-Personal Google Drive is the initial provider. OpenReef only requests the `drive.file` scope and can
-access the `OpenReef` folder and files it creates. The existing SharePoint adapter remains available
-for later organisational deployment.
+Personal Google Drive is the initial provider. A new app-created folder uses the narrow `drive.file`
+scope. Reusing a pre-existing dedicated folder such as `reefplot` requires Drive scope; the API and
+worker remain rooted to that folder ID. The existing SharePoint adapter remains available for later
+organisational deployment.

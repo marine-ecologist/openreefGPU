@@ -6,9 +6,11 @@ from worker.handler import (
     GoogleDriveClient,
     create_storage_client,
     google_query_value,
+    job_source_folder,
     result_file_name,
     safe_dataset_name,
     safe_file_name,
+    select_expected_files,
     select_result_artifacts,
     stage_from_output,
     validate_version_contract,
@@ -38,6 +40,17 @@ def test_cloud_names_are_safe() -> None:
     assert safe_file_name("DSC_0001.JPG") == "DSC_0001.JPG"
     with pytest.raises(RuntimeError, match="Unsafe"):
         safe_file_name("../secret.jpg")
+
+
+def test_existing_drive_folder_is_selected_without_moving_images() -> None:
+    job = {"source": {"kind": "storage-folder", "folder": "images"}}
+    assert job_source_folder(job, "jobs/job-id") == "images"
+    assert job_source_folder({}, "jobs/job-id") == "jobs/job-id/input"
+
+    items = [{"name": "IMG_1.JPG"}, {"name": "IMG_2.JPG"}]
+    assert select_expected_files(items, ["img_2.jpg"]) == [items[1]]
+    with pytest.raises(RuntimeError, match="missing 1"):
+        select_expected_files(items, ["IMG_3.JPG"])
 
 
 def test_google_drive_provider_configuration(monkeypatch: pytest.MonkeyPatch) -> None:

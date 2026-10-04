@@ -60,8 +60,7 @@ class GraphClient:
     def get_json(self, path: str) -> dict[str, Any]:
         payload = self.request(
             "GET",
-            f"/drives/{urllib.parse.quote(self.drive_id)}/root:/"
-            f"{encode_graph_path(path)}:/content",
+            f"/drives/{urllib.parse.quote(self.drive_id)}/root:/{encode_graph_path(path)}:/content",
         )
         if not isinstance(payload, dict):
             raise RuntimeError("Cloud job metadata is not valid JSON")
@@ -137,9 +136,12 @@ class GraphClient:
             path = next_link.removeprefix(GRAPH_ROOT) if next_link else ""
         return [item for item in items if "file" in item]
 
-    def download_folder(self, source: str, destination: Path) -> int:
+    def download_folder(
+        self, source: str, destination: Path, expected_names: list[str] | None = None
+    ) -> int:
         destination.mkdir(parents=True, exist_ok=True)
         items = self.list_files(source)
+        items = select_expected_files(items, expected_names)
         if not items:
             raise RuntimeError("The cloud input folder contains no source images")
         for index, item in enumerate(items, start=1):
@@ -307,9 +309,7 @@ class GoogleDriveClient:
 
     def get_json(self, path: str) -> dict[str, Any]:
         item = self._resolve_file(path)
-        payload = self.request(
-            "GET", f"/files/{urllib.parse.quote(item['id'])}?alt=media"
-        )
+        payload = self.request("GET", f"/files/{urllib.parse.quote(item['id'])}?alt=media")
         if not isinstance(payload, dict):
             raise RuntimeError("Cloud job metadata is not valid JSON")
         return payload
@@ -336,9 +336,12 @@ class GoogleDriveClient:
             if not page_token:
                 return items
 
-    def download_folder(self, source: str, destination: Path) -> int:
+    def download_folder(
+        self, source: str, destination: Path, expected_names: list[str] | None = None
+    ) -> int:
         destination.mkdir(parents=True, exist_ok=True)
         items = self.list_files(source)
+        items = select_expected_files(items, expected_names)
         if not items:
             raise RuntimeError("The Google Drive input folder contains no source images")
         for index, item in enumerate(items, start=1):
@@ -392,8 +395,7 @@ class GoogleDriveClient:
         item = self._find_child(parent_id, name)
         if item:
             endpoint = (
-                f"{GOOGLE_UPLOAD_ROOT}/files/{urllib.parse.quote(item['id'])}"
-                "?uploadType=resumable"
+                f"{GOOGLE_UPLOAD_ROOT}/files/{urllib.parse.quote(item['id'])}?uploadType=resumable"
             )
             method = "PATCH"
             metadata: dict[str, Any] = {}
@@ -450,8 +452,7 @@ class GoogleDriveClient:
                     if exc.code != 308:
                         detail = exc.read().decode("utf-8", errors="replace")[:500]
                         raise RuntimeError(
-                            f"Google Drive upload failed at byte {start} "
-                            f"({exc.code}): {detail}"
+                            f"Google Drive upload failed at byte {start} ({exc.code}): {detail}"
                         ) from exc
                 start = end + 1
 
@@ -551,7 +552,13 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     try:
         with tempfile.TemporaryDirectory(prefix=f"openreef-{job_id[:8]}-") as temporary:
             dataset = Path(temporary) / safe_dataset_name(str(job.get("name", "reef-survey")))
-            image_count = storage.download_folder(f"{job_root}/input", dataset / "images")
+            source_folder = job_source_folder(job, job_root)
+            expected_names = [
+                safe_file_name(str(item.get("name", "")))
+                for item in job.get("files", [])
+                if isinstance(item, dict)
+            ]
+            image_count = storage.download_folder(source_folder, dataset / "images", expected_names)
             update_job(
                 storage,
                 job_root,
@@ -559,9 +566,12 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 stage=f"Preparing {image_count} source images",
                 progress=5,
             )
-            run_pipeline(dataset, lambda stage, progress: update_job(
-                storage, job_root, job, stage=stage, progress=progress
-            ))
+            run_pipeline(
+                dataset,
+                lambda stage, progress: update_job(
+                    storage, job_root, job, stage=stage, progress=progress
+                ),
+            )
 
             artifacts = select_result_artifacts(dataset)
             update_job(storage, job_root, job, stage="Uploading compact web model", progress=96)
@@ -713,6 +723,30 @@ def update_job(
 def validate_job_root(root: str, variable: str) -> None:
     if not root or ".." in root.split("/"):
         raise WorkerConfigurationError(f"{variable} is invalid")
+
+
+def job_source_folder(job: dict[str, Any], job_root: str) -> str:
+    source = job.get("source")
+    if not isinstance(source, dict) or source.get("kind") != "storage-folder":
+        return f"{job_root}/input"
+    folder = str(source.get("folder", "")).strip("/")
+    if not folder or any(part in {"", ".", ".."} for part in folder.split("/")):
+        raise RuntimeError("Cloud job contains an invalid source folder")
+    return folder
+
+
+def select_expected_files(
+    items: list[dict[str, Any]], expected_names: list[str] | None
+) -> list[dict[str, Any]]:
+    if expected_names is None:
+        return items
+    expected = {name.casefold() for name in expected_names}
+    selected = [item for item in items if str(item.get("name", "")).casefold() in expected]
+    found = {str(item.get("name", "")).casefold() for item in selected}
+    missing = sorted(expected - found)
+    if missing:
+        raise RuntimeError(f"Cloud source folder is missing {len(missing)} expected file(s)")
+    return selected
 
 
 def required_env(name: str) -> str:

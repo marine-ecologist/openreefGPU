@@ -48,6 +48,9 @@ type CreateJobResponse = { job: CloudJob; uploads: UploadTarget[] };
 
 export function CloudJobs() {
   const [name, setName] = useState('New reef survey');
+  const [sourceMode, setSourceMode] = useState<'drive' | 'upload'>('drive');
+  const [driveFolder, setDriveFolder] = useState('images');
+  const [driveLimit, setDriveLimit] = useState(30);
   const [files, setFiles] = useState<File[]>([]);
   const [job, setJob] = useState<CloudJob | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -107,8 +110,12 @@ export function CloudJobs() {
       );
       return;
     }
-    if (files.length < 2) {
+    if (sourceMode === 'upload' && files.length < 2) {
       setError('Choose at least two overlapping reef photographs.');
+      return;
+    }
+    if (sourceMode === 'drive' && !driveFolder.trim()) {
+      setError('Enter the folder containing the Drive photographs.');
       return;
     }
     setSubmitting(true);
@@ -119,11 +126,15 @@ export function CloudJobs() {
         method: 'POST',
         body: JSON.stringify({
           name,
-          files: files.map((file) => ({
-            name: file.name,
-            size: file.size,
-            contentType: file.type || 'application/octet-stream',
-          })),
+          ...(sourceMode === 'drive'
+            ? { sourceFolder: driveFolder, maxFiles: driveLimit }
+            : {
+                files: files.map((file) => ({
+                  name: file.name,
+                  size: file.size,
+                  contentType: file.type || 'application/octet-stream',
+                })),
+              }),
         }),
       });
       setJob(created.job);
@@ -185,42 +196,97 @@ export function CloudJobs() {
                 onChange={(event) => setName(event.target.value)}
               />
             </label>
-            <label>
-              <span>Source photographs</span>
-              <input
-                ref={inputRef}
-                className="cloud-file-input"
-                type="file"
-                accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,image/*"
-                multiple
-                onChange={(event) =>
-                  setFiles(Array.from(event.target.files ?? []))
-                }
-              />
+            <div className="cloud-source-tabs" aria-label="Photograph source">
               <button
-                className="cloud-file-picker"
                 type="button"
-                onClick={() => inputRef.current?.click()}
+                aria-pressed={sourceMode === 'drive'}
+                onClick={() => setSourceMode('drive')}
               >
-                <FolderOpen />
-                <strong>
-                  {files.length
-                    ? `${files.length} photographs selected`
-                    : 'Choose photographs'}
-                </strong>
-                <small>
-                  {files.length
-                    ? formatBytes(totalBytes)
-                    : 'JPG, PNG, TIFF or WebP'}
-                </small>
+                Use Drive folder
               </button>
-            </label>
+              <button
+                type="button"
+                aria-pressed={sourceMode === 'upload'}
+                onClick={() => setSourceMode('upload')}
+              >
+                Upload new photos
+              </button>
+            </div>
+            {sourceMode === 'drive' ? (
+              <>
+                <label>
+                  <span>Folder inside reefplot</span>
+                  <input
+                    value={driveFolder}
+                    maxLength={300}
+                    onChange={(event) => setDriveFolder(event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Photos in first run</span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={2000}
+                    value={driveLimit}
+                    onChange={(event) =>
+                      setDriveLimit(
+                        Number.parseInt(event.target.value, 10) || 2,
+                      )
+                    }
+                  />
+                  <small className="cloud-field-help">
+                    Start with 30 photos; increase after the smoke test.
+                  </small>
+                </label>
+              </>
+            ) : (
+              <label>
+                <span>Source photographs</span>
+                <input
+                  ref={inputRef}
+                  className="cloud-file-input"
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,image/*"
+                  multiple
+                  onChange={(event) =>
+                    setFiles(Array.from(event.target.files ?? []))
+                  }
+                />
+                <button
+                  className="cloud-file-picker"
+                  type="button"
+                  onClick={() => inputRef.current?.click()}
+                >
+                  <FolderOpen />
+                  <strong>
+                    {files.length
+                      ? `${files.length} photographs selected`
+                      : 'Choose photographs'}
+                  </strong>
+                  <small>
+                    {files.length
+                      ? formatBytes(totalBytes)
+                      : 'JPG, PNG, TIFF or WebP'}
+                  </small>
+                </button>
+              </label>
+            )}
             <Button
               onClick={submit}
-              disabled={submitting || files.length < 2 || !name.trim()}
+              disabled={
+                submitting ||
+                !name.trim() ||
+                (sourceMode === 'upload' && files.length < 2) ||
+                (sourceMode === 'drive' && !driveFolder.trim())
+              }
             >
               {submitting ? <LoaderCircle className="spin" /> : <CloudUpload />}
-              {submitting ? 'Uploading photographs…' : 'Submit GPU job'}
+              {submitting
+                ? sourceMode === 'drive'
+                  ? 'Starting Drive job…'
+                  : 'Uploading photographs…'
+                : 'Submit GPU job'}
             </Button>
           </div>
         ) : (

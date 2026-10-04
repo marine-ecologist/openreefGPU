@@ -33,6 +33,10 @@ interface JobRecord {
   createdAt: string;
   updatedAt: string;
   files: JobFile[];
+  source?: {
+    kind: 'job-upload' | 'storage-folder';
+    folder: string;
+  };
   versions: {
     openreef: string;
     openreefGPU: string;
@@ -121,9 +125,24 @@ const worker = {
 export default worker;
 
 async function createJob(request: Request, env: Env) {
-  const body = await parseJson<{ name?: unknown; files?: unknown }>(request);
+  const body = await parseJson<{
+    name?: unknown;
+    files?: unknown;
+    sourceFolder?: unknown;
+    maxFiles?: unknown;
+  }>(request);
   const name = cleanDatasetName(body.name);
-  const files = validateFiles(body.files);
+  const storage = storageForEnv(env);
+  const sourceFolder =
+    body.sourceFolder === undefined
+      ? undefined
+      : cleanSourceFolder(body.sourceFolder);
+  const source = sourceFolder
+    ? { kind: 'storage-folder' as const, folder: sourceFolder }
+    : { kind: 'job-upload' as const, folder: '' };
+  const files = sourceFolder
+    ? await filesFromStorageFolder(storage, sourceFolder, body.maxFiles)
+    : validateFiles(body.files);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const record: JobRecord = {
@@ -136,30 +155,32 @@ async function createJob(request: Request, env: Env) {
     createdAt: now,
     updatedAt: now,
     files,
+    source,
     versions: deploymentVersions(env),
   };
 
-  const storage = storageForEnv(env);
   await storage.ensureFolder(jobFolder(id));
-  await storage.ensureFolder(`${jobFolder(id)}/input`);
+  if (!sourceFolder) await storage.ensureFolder(`${jobFolder(id)}/input`);
   await storage.ensureFolder(`${jobFolder(id)}/output`);
   await writeJob(env, record);
 
-  const uploads = await Promise.all(
-    files.map(async (file) => {
-      const session = await storage.createBrowserUpload(
-        `${jobFolder(id)}/input/${file.name}`,
-        file.size,
-        file.contentType,
+  const uploads = sourceFolder
+    ? []
+    : await Promise.all(
+        files.map(async (file) => {
+          const session = await storage.createBrowserUpload(
+            `${jobFolder(id)}/input/${file.name}`,
+            file.size,
+            file.contentType,
+          );
+          return {
+            name: file.name,
+            size: file.size,
+            uploadUrl: session.uploadUrl,
+            expiresAt: session.expiresAt,
+          };
+        }),
       );
-      return {
-        name: file.name,
-        size: file.size,
-        uploadUrl: session.uploadUrl,
-        expiresAt: session.expiresAt,
-      };
-    }),
-  );
   return { job: publicJob(record, env), uploads };
 }
 
@@ -168,9 +189,11 @@ async function startJob(jobId: string, env: Env) {
   if (job.state !== 'uploading') {
     throw new HttpError(409, `Job is already ${job.state}`);
   }
-  const children = await storageForEnv(env).listFiles(
-    `${jobFolder(jobId)}/input`,
-  );
+  const storage = storageForEnv(env);
+  const children =
+    job.source?.kind === 'storage-folder'
+      ? await storage.listRootFiles(job.source.folder)
+      : await storage.listFiles(`${jobFolder(jobId)}/input`);
   const uploaded = new Map(
     children.map((item) => [item.name.toLowerCase(), item.size]),
   );
@@ -397,6 +420,66 @@ function validateFiles(value: unknown): JobFile[] {
       throw new HttpError(413, 'The upload is larger than 50 GiB');
     return { name, size, contentType };
   });
+}
+
+async function filesFromStorageFolder(
+  storage: ReturnType<typeof storageForEnv>,
+  folder: string,
+  limitValue: unknown,
+): Promise<JobFile[]> {
+  const limit =
+    limitValue === undefined
+      ? MAX_FILES
+      : typeof limitValue === 'number' || typeof limitValue === 'string'
+        ? Number.parseInt(`${limitValue}`, 10)
+        : Number.NaN;
+  if (!Number.isSafeInteger(limit) || limit < 2 || limit > MAX_FILES) {
+    throw new HttpError(400, `Photo limit must be between 2 and ${MAX_FILES}`);
+  }
+  const items = (await storage.listRootFiles(folder))
+    .filter((file) =>
+      IMAGE_EXTENSIONS.has(file.name.split('.').pop()?.toLowerCase() || ''),
+    )
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .slice(0, limit)
+    .map((file) => ({
+      name: file.name,
+      size: file.size,
+      contentType: 'application/octet-stream',
+    }));
+  return validateFiles(items);
+}
+
+function cleanSourceFolder(value: unknown): string {
+  if (typeof value !== 'string')
+    throw new HttpError(400, 'Enter a Drive source folder');
+  const path = value
+    .normalize('NFKC')
+    .replace(/^\/+|\/+$/g, '')
+    .trim();
+  const parts = path.split('/');
+  if (
+    !path ||
+    path.length > 300 ||
+    parts.some(
+      (part) =>
+        !part ||
+        part === '.' ||
+        part === '..' ||
+        /[<>:"\\|?*]/.test(part) ||
+        containsControlCharacter(part),
+    )
+  ) {
+    throw new HttpError(400, 'Invalid Drive source folder');
+  }
+  return parts.join('/');
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) < 32) return true;
+  }
+  return false;
 }
 
 function cleanFileName(value: unknown): string {

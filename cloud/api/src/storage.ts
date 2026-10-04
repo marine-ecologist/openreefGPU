@@ -32,6 +32,7 @@ export interface Storage {
     contentType: string,
   ): Promise<BrowserUpload>;
   listFiles(path: string): Promise<StoredFile[]>;
+  listRootFiles(path: string): Promise<StoredFile[]>;
   readJson<T>(path: string): Promise<T>;
   writeJson(path: string, value: unknown): Promise<void>;
   readFile(path: string, range: string | null): Promise<Response>;
@@ -123,7 +124,15 @@ class SharePointStorage implements Storage {
   }
 
   async listFiles(path: string): Promise<StoredFile[]> {
-    let next = `/drives/${encodeURIComponent(this.driveId)}/root:/${encodeGraphPath(this.fullPath(path))}:/children?$select=name,size&$top=200`;
+    return this.listFilesAtPath(this.fullPath(path));
+  }
+
+  async listRootFiles(path: string): Promise<StoredFile[]> {
+    return this.listFilesAtPath(path.replace(/^\/+|\/+$/g, ''));
+  }
+
+  private async listFilesAtPath(path: string): Promise<StoredFile[]> {
+    let next = `/drives/${encodeURIComponent(this.driveId)}/root:/${encodeGraphPath(path)}:/children?$select=name,size&$top=200`;
     const items: StoredFile[] = [];
     while (next) {
       const result: {
@@ -286,7 +295,15 @@ class GoogleDriveStorage implements Storage {
   }
 
   async listFiles(path: string): Promise<StoredFile[]> {
-    const parentId = await this.resolveFolder(this.fullPath(path), false);
+    return this.listFilesAtPath(this.fullPath(path));
+  }
+
+  async listRootFiles(path: string): Promise<StoredFile[]> {
+    return this.listFilesAtPath(path.replace(/^\/+|\/+$/g, ''));
+  }
+
+  private async listFilesAtPath(path: string): Promise<StoredFile[]> {
+    const parentId = await this.resolveFolder(path, false);
     const items: StoredFile[] = [];
     let pageToken = '';
     do {
