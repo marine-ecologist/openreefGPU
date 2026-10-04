@@ -1,130 +1,67 @@
 'use client';
 
-import { useState } from 'react';
-import { Check, Clock3, Layers3 } from 'lucide-react';
+import { Cloud, HardDrive } from 'lucide-react';
+import Image from 'next/image';
 
-import { ReefViewer } from './reef-viewer';
 import { CloudJobs } from './cloud-jobs';
 
-type DatasetId = 'patchreef' | 'annularis' | 'natans' | 'cloud';
-
-const datasets: Array<{
-  id: DatasetId;
-  label: string;
-  scientific?: string;
-  ready: boolean;
-}> = [
-  { id: 'patchreef', label: 'Patch reef', ready: true },
-  {
-    id: 'annularis',
-    label: 'Annularis',
-    scientific: 'Orbicella annularis',
-    ready: false,
-  },
-  {
-    id: 'natans',
-    label: 'Natans',
-    scientific: 'Orbicella faveolata',
-    ready: false,
-  },
-  { id: 'cloud', label: 'RunPod GPU', ready: true },
-];
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 
 export default function Home() {
-  const [datasetId, setDatasetId] = useState<DatasetId>('cloud');
-  const dataset = datasets.find((item) => item.id === datasetId)!;
-
   return (
-    <main className="site-shell">
-      <header className="topbar">
-        <a className="brand" href="#viewer" aria-label="openreefGPU home">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
+    <main className="app-shell">
+      <aside className="app-sidebar" aria-label="OpenReef Cloud">
+        <div className="traffic-lights" aria-hidden="true">
+          <span className="traffic-red" />
+          <span className="traffic-yellow" />
+          <span className="traffic-green" />
+        </div>
+
+        <a
+          className="app-brand"
+          href="#workspace"
+          aria-label="OpenReef Cloud home"
+        >
+          <Image
+            src={`${basePath}/openreef-icon.png`}
+            width={44}
+            height={44}
+            alt=""
+            unoptimized
+          />
           <span>
-            <strong>OPENREEF GPU</strong>
-            <small>CLOUD RECONSTRUCTION</small>
+            <strong>OpenReef</strong>
+            <small>CLOUD GPU</small>
           </span>
         </a>
 
-        <nav className="dataset-nav" aria-label="Reef examples">
-          {datasets.map((item) => (
-            <button
-              className="dataset-tab"
-              data-active={item.id === datasetId}
-              key={item.id}
-              onClick={() => setDatasetId(item.id)}
-              type="button"
-            >
-              <span>{item.label}</span>
-              {item.ready ? (
-                <span className="availability ready">
-                  <Check aria-hidden="true" /> Ready
-                </span>
-              ) : (
-                <span className="availability">
-                  <Clock3 aria-hidden="true" /> Soon
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
+        <div className="sidebar-divider" />
+        <p className="sidebar-section">CLOUD RUNTIME</p>
+        <div className="runtime-card">
+          <Cloud aria-hidden="true" />
+          <span>
+            <strong>RunPod Serverless</strong>
+            <small>Scale to zero</small>
+          </span>
+        </div>
+        <div className="runtime-card muted">
+          <HardDrive aria-hidden="true" />
+          <span>
+            <strong>Google Drive</strong>
+            <small>reefplot storage</small>
+          </span>
+        </div>
 
-        <div className="project-tag">RunPod accelerated</div>
-      </header>
+        <p className="sidebar-version">OpenReefGPU v0.6.3-gpu.1</p>
+      </aside>
 
       <section
-        id="viewer"
+        id="workspace"
         className="workspace"
-        aria-label={`${dataset.label} viewer`}
+        aria-label="Cloud GPU workspace"
       >
-        {dataset.id === 'cloud' ? (
-          <CloudJobs />
-        ) : dataset.ready ? (
-          <ReefViewer />
-        ) : (
-          <Placeholder
-            name={dataset.label}
-            scientific={dataset.scientific ?? dataset.label}
-          />
-        )}
+        <CloudJobs />
       </section>
     </main>
-  );
-}
-
-function Placeholder({
-  name,
-  scientific,
-}: {
-  name: string;
-  scientific: string;
-}) {
-  return (
-    <div className="placeholder">
-      <div className="placeholder-grid" aria-hidden="true" />
-      <div className="placeholder-card">
-        <div className="placeholder-icon" aria-hidden="true">
-          <Layers3 />
-        </div>
-        <p className="eyebrow">Compact reconstruction processing</p>
-        <h1>{name}</h1>
-        <p className="scientific">{scientific}</p>
-        <p className="placeholder-copy">
-          This example is wired into the collection. Its viewer will activate as
-          soon as the complete compact asset set is available.
-        </p>
-        <div className="asset-checklist" aria-label="Required views">
-          <span>Textured mesh</span>
-          <span>Sparse cloud · original colour</span>
-          <span>Dense points + mesh</span>
-        </div>
-      </div>
-      <p className="interaction-hint muted">
-        Choose Patch reef to explore the live reconstruction
-      </p>
-    </div>
   );
 }

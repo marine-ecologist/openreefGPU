@@ -169,7 +169,6 @@ export function CloudJobs() {
 
   return (
     <div className="cloud-workspace">
-      <div className="cloud-grid" aria-hidden="true" />
       <section className="cloud-card" aria-labelledby="cloud-title">
         <div className="cloud-card-heading">
           <span className="cloud-icon">
