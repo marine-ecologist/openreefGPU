@@ -7,6 +7,7 @@ from worker.handler import (
     create_storage_client,
     google_query_value,
     job_source_folder,
+    pipeline_core_count,
     result_file_name,
     safe_dataset_name,
     safe_file_name,
@@ -20,6 +21,24 @@ from worker.handler import (
 def test_stage_from_pipeline_output() -> None:
     assert stage_from_output("[3/8] Sparse reconstruction") == "Sparse reconstruction"
     assert stage_from_output("ordinary tool output") is None
+
+
+def test_pipeline_threads_are_capped_for_large_cloud_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("worker.handler.os.cpu_count", lambda: 128)
+    monkeypatch.setenv("OPENREEF_MAX_CORES", "32")
+
+    assert pipeline_core_count() == 32
+
+
+def test_pipeline_thread_cap_rejects_invalid_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENREEF_MAX_CORES", "many")
+
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        pipeline_core_count()
 
 
 def test_result_selection_prefers_compact_textured_glb(tmp_path: Path) -> None:
@@ -72,10 +91,10 @@ def test_worker_rejects_a_mismatched_openreef_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.1")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.2")
     payload = {
         "openreef_version": "0.6.4",
-        "openreef_gpu_version": "0.6.3-gpu.1",
+        "openreef_gpu_version": "0.6.3-gpu.2",
     }
 
     with pytest.raises(ValueError, match="does not match"):
@@ -84,13 +103,13 @@ def test_worker_rejects_a_mismatched_openreef_version(
 
 def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.1")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.2")
     payload = {
         "openreef_version": "0.6.3",
-        "openreef_gpu_version": "0.6.3-gpu.1",
+        "openreef_gpu_version": "0.6.3-gpu.2",
     }
 
     assert validate_version_contract(payload, "0.6.3") == {
         "openreef": "0.6.3",
-        "openreefGPU": "0.6.3-gpu.1",
+        "openreefGPU": "0.6.3-gpu.2",
     }

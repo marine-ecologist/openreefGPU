@@ -629,6 +629,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
+    cores = pipeline_core_count()
     command = [
         "openreef-pipeline",
         str(dataset),
@@ -643,9 +644,9 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
         "--texture-resolution-level",
         os.environ.get("OPENREEF_TEXTURE_RESOLUTION_LEVEL", "1"),
         "--cores",
-        str(max(1, (os.cpu_count() or 2) - 1)),
+        str(cores),
     ]
-    print("Starting OpenReef compact pipeline", flush=True)
+    print(f"Starting OpenReef compact pipeline with {cores} CPU threads", flush=True)
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -663,7 +664,23 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
             progress(stage, STAGE_PROGRESS[stage])
     return_code = process.wait()
     if return_code:
-        raise RuntimeError(f"OpenReef pipeline exited with code {return_code}")
+        detail = (
+            "; native reconstruction tool likely aborted with SIGABRT" if return_code == 250 else ""
+        )
+        raise RuntimeError(f"OpenReef pipeline exited with code {return_code}{detail}")
+
+
+def pipeline_core_count() -> int:
+    """Cap native tools below very large cloud host CPU counts."""
+    available = max(1, (os.cpu_count() or 2) - 1)
+    raw_limit = os.environ.get("OPENREEF_MAX_CORES", "32").strip()
+    try:
+        configured = int(raw_limit)
+    except ValueError as exc:
+        raise WorkerConfigurationError("OPENREEF_MAX_CORES must be an integer") from exc
+    if configured < 1:
+        raise WorkerConfigurationError("OPENREEF_MAX_CORES must be at least 1")
+    return min(available, configured)
 
 
 def stage_from_output(line: str) -> str | None:

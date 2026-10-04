@@ -4,7 +4,8 @@
 FROM nvidia/cuda:12.9.1-devel-ubuntu24.04 AS openmvs-builder
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG OPENMVS_VERSION=v2.3.0
+ARG OPENMVS_VERSION=2.4.0
+ARG OPENMVS_REF=2d89278c287f11be126e7f46cc403ec4596b7721
 ARG VCG_REF=658ba36d0a5666650da6e066b4794efc5a463407
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates python3 python3-dev \
@@ -18,21 +19,28 @@ RUN git init /opt/vcglib \
     && git -C /opt/vcglib fetch --depth 1 origin "${VCG_REF}" \
     && git -C /opt/vcglib checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/vcglib rev-parse HEAD)" = "${VCG_REF}" \
-    && git clone --branch "${OPENMVS_VERSION}" --depth 1 \
-      https://github.com/cdcseacave/openMVS.git /opt/openMVS \
+    && git init /opt/openMVS \
+    && git -C /opt/openMVS remote add origin https://github.com/cdcseacave/openMVS.git \
+    && git -C /opt/openMVS fetch --depth 1 origin "${OPENMVS_REF}" \
+    && git -C /opt/openMVS checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/openMVS rev-parse HEAD)" = "${OPENMVS_REF}" \
     && cmake -S /opt/openMVS -B /opt/openMVS/build \
-      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="75;86;89" \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="75;86;89;120" \
       -DCUDA_CUDA_LIBRARY=/usr/local/cuda/lib64/stubs/libcuda.so \
-      -DOpenMVS_USE_CUDA=ON -DOpenMVS_BUILD_TOOLS=ON -DVCG_ROOT=/opt/vcglib \
+      -DOpenMVS_USE_CUDA=ON -DOpenMVS_BUILD_TOOLS=ON \
+      -DOpenMVS_BUILD_VIEWER=OFF -DOpenMVS_USE_BREAKPAD=OFF \
+      -DOpenMVS_USE_PYTHON=OFF -DOpenMVS_ENABLE_TESTS=OFF \
+      -DVCG_ROOT=/opt/vcglib \
     && cmake --build /opt/openMVS/build --parallel "$(nproc)" \
-    && cmake --install /opt/openMVS/build --prefix /opt/openmvs-install
+    && cmake --install /opt/openMVS/build --prefix /opt/openmvs-install \
+    && printf '%s\n' "${OPENMVS_VERSION}" > /opt/openmvs-install/OPENMVS_VERSION
 
 FROM colmap/colmap:20260907.8077
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.3
 ARG OPENREEF_REF=c5da966804860b500a4f5657c783d9df9de9cbfc
-ARG OPENREEF_GPU_VERSION=0.6.3-gpu.1
+ARG OPENREEF_GPU_VERSION=0.6.3-gpu.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
@@ -69,6 +77,7 @@ ENV PYTHONUNBUFFERED=1 \
     OPENREEF_MAX_RESOLUTION=2560 \
     OPENREEF_MAX_TEXTURE_SIZE=4096 \
     OPENREEF_TEXTURE_RESOLUTION_LEVEL=1 \
+    OPENREEF_MAX_CORES=32 \
     GOOGLE_DRIVE_JOB_ROOT=jobs
 
 WORKDIR /opt/openreefgpu

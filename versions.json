@@ -1,13 +1,18 @@
 {
   "schemaVersion": 1,
   "openreefGPU": {
-    "version": "0.6.3-gpu.1"
+    "version": "0.6.3-gpu.2"
   },
   "openreef": {
     "version": "0.6.3",
     "repository": "https://github.com/marine-ecologist/openreef.git",
     "ref": "v0.6.3",
     "commit": "c5da966804860b500a4f5657c783d9df9de9cbfc"
+  },
+  "openMVS": {
+    "version": "2.4.0",
+    "repository": "https://github.com/cdcseacave/openMVS.git",
+    "commit": "2d89278c287f11be126e7f46cc403ec4596b7721"
   },
   "contracts": {
     "jobSchema": 1,
