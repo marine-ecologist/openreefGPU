@@ -4,7 +4,9 @@ import { join } from 'node:path';
 const repository = process.env.GITHUB_REPOSITORY;
 
 if (!repository) {
-  console.log('No GitHub repository path detected; no output normalization needed.');
+  console.log(
+    'No GitHub repository path detected; no output normalization needed.',
+  );
   process.exit(0);
 }
 
@@ -20,4 +22,6 @@ const prefixedDirectory = join(clientDirectory, repositoryName);
 await rename(join(prefixedDirectory, '_next'), join(clientDirectory, '_next'));
 await rmdir(prefixedDirectory);
 
-console.log(`Prepared static assets for the /${repositoryName}/ GitHub Pages path.`);
+console.log(
+  `Prepared static assets for the /${repositoryName}/ GitHub Pages path.`,
+);
