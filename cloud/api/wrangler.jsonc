@@ -4,8 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
+  "preview_urls": false,
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:5173",
+    "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:5173,https://marine-ecologist.github.io",
     "REQUIRE_ACCESS": "false",
     "STORAGE_PROVIDER": "google-drive",
     "GOOGLE_DRIVE_JOB_ROOT": "jobs",
