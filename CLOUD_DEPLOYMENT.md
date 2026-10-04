@@ -13,6 +13,24 @@ reconstructions.
 
 SharePoint remains supported by setting `STORAGE_PROVIDER=sharepoint`; see the final section.
 
+## Current live deployment
+
+The initial Google Drive deployment is available at:
+
+```text
+Browser: https://marine-ecologist.github.io/openreefGPU/
+API:     https://openreef-gpu-api.openreef-gpu.workers.dev
+RunPod:  endpoint 93jkogjuc9l6pu (openreef-gpu)
+```
+
+GitHub Actions injects the API address from the repository variable `OPENREEF_API_URL`. Cloudflare
+allows the exact production origin `https://marine-ecologist.github.io` and the local development
+origins declared in `cloud/api/wrangler.jsonc`. Disposable Cloudflare preview URLs are disabled.
+
+This first deployment currently uses `REQUIRE_ACCESS=false` for smoke testing. Do not leave it as
+an unattended public service: enable Cloudflare Access and change `REQUIRE_ACCESS` to `true` after
+the first end-to-end reconstruction has been verified.
+
 ## Repository pieces
 
 - `app/cloud-jobs.tsx`: photograph selection, chunked uploads, job polling, and viewer handoff.

@@ -10,6 +10,18 @@ Browser → Google Drive → Cloudflare API → RunPod GPU
         → pinned OpenReef pipeline → GLB → browser viewer
 ```
 
+## Live deployment
+
+- Browser: <https://marine-ecologist.github.io/openreefGPU/>
+- API broker: <https://openreef-gpu-api.openreef-gpu.workers.dev/v1/health>
+- RunPod endpoint: `openreef-gpu` (`93jkogjuc9l6pu`)
+- Storage root: the dedicated `reefplot` folder in Google Drive; existing survey images remain in
+  `reefplot/images`, and cloud job state and outputs are written below `reefplot/jobs`.
+
+The browser build receives the broker URL through the GitHub Actions repository variable
+`OPENREEF_API_URL`. The initial smoke-test deployment has broker authentication disabled; enable
+Cloudflare Access before treating the URL as an unattended public service.
+
 ## Product boundary
 
 - **OpenReef** is the desktop application and canonical Python reconstruction pipeline.
