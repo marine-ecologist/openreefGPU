@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-filesystem-dev libboost-graph-dev libboost-iostreams-dev \
     libboost-program-options-dev libboost-serialization-dev libboost-system-dev \
     libceres-dev libcgal-dev libeigen3-dev libglew-dev libglfw3-dev \
-    libglu1-mesa-dev libjpeg-dev libjxl-dev libnanoflann-dev libopencv-dev libpng-dev libtiff-dev \
+    libglu1-mesa-dev libjpeg-dev libnanoflann-dev libopencv-dev libpng-dev libtiff-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN git init /opt/vcglib \
     && git -C /opt/vcglib remote add origin https://github.com/cdcseacave/VCG.git \
@@ -24,6 +24,8 @@ RUN git init /opt/vcglib \
     && git -C /opt/openMVS fetch --depth 1 origin "${OPENMVS_REF}" \
     && git -C /opt/openMVS checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/openMVS rev-parse HEAD)" = "${OPENMVS_REF}" \
+    && grep -Fq 'pkg_check_modules_fullpath_libs(JPEGXL libjxl)' /opt/openMVS/libs/IO/CMakeLists.txt \
+    && sed -i 's/pkg_check_modules_fullpath_libs(JPEGXL libjxl)/set(JPEGXL_FOUND FALSE)/' /opt/openMVS/libs/IO/CMakeLists.txt \
     && cmake -S /opt/openMVS -B /opt/openMVS/build \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="75;86;89;120" \
       -DCUDA_CUDA_LIBRARY=/usr/local/cuda/lib64/stubs/libcuda.so \
@@ -40,7 +42,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.3
 ARG OPENREEF_REF=c5da966804860b500a4f5657c783d9df9de9cbfc
-ARG OPENREEF_GPU_VERSION=0.6.3-gpu.4
+ARG OPENREEF_GPU_VERSION=0.6.3-gpu.5
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
