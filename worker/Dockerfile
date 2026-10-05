@@ -7,6 +7,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENMVS_VERSION=2.4.0
 ARG OPENMVS_REF=2d89278c287f11be126e7f46cc403ec4596b7721
 ARG VCG_REF=658ba36d0a5666650da6e066b4794efc5a463407
+COPY worker/patches/openmvs-disable-jpegxl.patch /tmp/openmvs-disable-jpegxl.patch
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates python3 python3-dev \
     libboost-filesystem-dev libboost-graph-dev libboost-iostreams-dev \
@@ -24,8 +25,8 @@ RUN git init /opt/vcglib \
     && git -C /opt/openMVS fetch --depth 1 origin "${OPENMVS_REF}" \
     && git -C /opt/openMVS checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/openMVS rev-parse HEAD)" = "${OPENMVS_REF}" \
-    && grep -Fq 'pkg_check_modules_fullpath_libs(JPEGXL libjxl)' /opt/openMVS/libs/IO/CMakeLists.txt \
-    && sed -i 's/pkg_check_modules_fullpath_libs(JPEGXL libjxl)/set(JPEGXL_FOUND FALSE)/' /opt/openMVS/libs/IO/CMakeLists.txt \
+    && git -C /opt/openMVS apply --check /tmp/openmvs-disable-jpegxl.patch \
+    && git -C /opt/openMVS apply /tmp/openmvs-disable-jpegxl.patch \
     && cmake -S /opt/openMVS -B /opt/openMVS/build \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="75;86;89;120" \
       -DCUDA_CUDA_LIBRARY=/usr/local/cuda/lib64/stubs/libcuda.so \
@@ -42,7 +43,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.3
 ARG OPENREEF_REF=c5da966804860b500a4f5657c783d9df9de9cbfc
-ARG OPENREEF_GPU_VERSION=0.6.3-gpu.5
+ARG OPENREEF_GPU_VERSION=0.6.3-gpu.6
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \

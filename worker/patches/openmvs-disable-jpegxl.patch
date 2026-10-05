@@ -1,0 +1,26 @@
+diff --git a/libs/Common/Types.inl b/libs/Common/Types.inl
+--- a/libs/Common/Types.inl
++++ b/libs/Common/Types.inl
+@@ -3106,10 +3106,6 @@ static bool SaveImage(const cv::Mat& img, const String& fileName)
+ 		compression_params.push_back(cv::IMWRITE_JPEG_QUALITY);
+ 		compression_params.push_back(95);
+ 	} else
+-	if (ext == ".jxl") {
+-		compression_params.push_back(cv::IMWRITE_JPEGXL_QUALITY);
+-		compression_params.push_back(95);
+-	} else
+ 	if (ext == ".pfm") {
+ 		if (img.depth() != CV_32F)
+ 			return false;
+diff --git a/libs/IO/CMakeLists.txt b/libs/IO/CMakeLists.txt
+--- a/libs/IO/CMakeLists.txt
++++ b/libs/IO/CMakeLists.txt
+@@ -61,7 +61,7 @@ else()
+ 	SET(JPEG_LIBRARIES "")
+ endif()
+ FIND_PACKAGE(PkgConfig REQUIRED)
+-pkg_check_modules_fullpath_libs(JPEGXL libjxl)
++set(JPEGXL_FOUND FALSE)
+ if(JPEGXL_FOUND)
+ 	SET(_USE_JXL TRUE CACHE INTERNAL "")
+ 	set(JPEGXL_LIBRARIES ${JPEGXL_FULLPATH_LIBRARIES})
