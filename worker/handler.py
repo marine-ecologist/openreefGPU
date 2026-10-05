@@ -744,7 +744,11 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
         "--max-texture-size",
         os.environ.get("OPENREEF_MAX_TEXTURE_SIZE", "4096"),
         "--texture-resolution-level",
-        os.environ.get("OPENREEF_TEXTURE_RESOLUTION_LEVEL", "1"),
+        os.environ.get("OPENREEF_TEXTURE_RESOLUTION_LEVEL", "0"),
+        "--texture-sharpness",
+        os.environ.get("OPENREEF_TEXTURE_SHARPNESS", "0"),
+        "--no-global-seam-leveling",
+        "--no-local-seam-leveling",
         "--cores",
         str(cores),
     ]

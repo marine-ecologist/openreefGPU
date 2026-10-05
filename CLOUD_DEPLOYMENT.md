@@ -124,7 +124,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.9
+ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.10
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -137,8 +137,8 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.9 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.9
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.10 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.10
 ```
 
 The image starts from CUDA-enabled COLMAP and builds OpenMVS with CUDA enabled. It is large, so a
@@ -165,12 +165,15 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.3
-OPENREEF_GPU_VERSION=0.6.3-gpu.9
+OPENREEF_GPU_VERSION=0.6.3-gpu.10
 ```
 
 Optional compact-profile tuning variables are `OPENREEF_MAX_IMAGE_SIZE`,
 `OPENREEF_MAX_RESOLUTION`, `OPENREEF_MAX_TEXTURE_SIZE`, and
-`OPENREEF_TEXTURE_RESOLUTION_LEVEL`. `OPENREEF_MAX_CORES` defaults to `32` to avoid passing very
+`OPENREEF_TEXTURE_RESOLUTION_LEVEL` and `OPENREEF_TEXTURE_SHARPNESS`. The cloud compact profile
+uses full-resolution texture input with OpenMVS seam leveling and sharpening disabled because the
+OpenMVS 2.4 seam solver produced clipped black/red texture patches on the reef survey validation
+set. `OPENREEF_MAX_CORES` defaults to `32` to avoid passing very
 large cloud-host CPU counts into COLMAP and OpenMVS.
 
 Record the Runpod endpoint ID and create a scoped Runpod API key for the broker.
