@@ -35,6 +35,7 @@ STAGE_PROGRESS = {
     "Texture mesh": 92,
 }
 JOB_SCHEMA_VERSION = 1
+TransferProgress = Callable[[int, int, int, int, str], None]
 
 
 class WorkerConfigurationError(RuntimeError):
@@ -137,22 +138,32 @@ class GraphClient:
         return [item for item in items if "file" in item]
 
     def download_folder(
-        self, source: str, destination: Path, expected_names: list[str] | None = None
+        self,
+        source: str,
+        destination: Path,
+        expected_names: list[str] | None = None,
+        on_progress: TransferProgress | None = None,
     ) -> int:
         destination.mkdir(parents=True, exist_ok=True)
         items = self.list_files(source)
         items = select_expected_files(items, expected_names)
         if not items:
             raise RuntimeError("The cloud input folder contains no source images")
+        total_bytes = sum(int(item.get("size") or 0) for item in items)
+        completed_bytes = 0
         for index, item in enumerate(items, start=1):
             name = safe_file_name(item["name"])
             download_url = item.get("@microsoft.graph.downloadUrl")
             if not download_url:
                 raise RuntimeError(f"SharePoint did not return a download URL for {name}")
             print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
+            target = destination / name
             with urllib.request.urlopen(download_url, timeout=600) as response:
-                with (destination / name).open("wb") as output:
+                with target.open("wb") as output:
                     shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
+            completed_bytes += target.stat().st_size
+            if on_progress:
+                on_progress(index, len(items), completed_bytes, total_bytes, name)
         return len(items)
 
     def put_bytes(self, path: str, payload: bytes, content_type: str) -> None:
@@ -337,13 +348,19 @@ class GoogleDriveClient:
                 return items
 
     def download_folder(
-        self, source: str, destination: Path, expected_names: list[str] | None = None
+        self,
+        source: str,
+        destination: Path,
+        expected_names: list[str] | None = None,
+        on_progress: TransferProgress | None = None,
     ) -> int:
         destination.mkdir(parents=True, exist_ok=True)
         items = self.list_files(source)
         items = select_expected_files(items, expected_names)
         if not items:
             raise RuntimeError("The Google Drive input folder contains no source images")
+        total_bytes = sum(int(item.get("size") or 0) for item in items)
+        completed_bytes = 0
         for index, item in enumerate(items, start=1):
             name = safe_file_name(item["name"])
             print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
@@ -352,14 +369,18 @@ class GoogleDriveClient:
                 headers={"Authorization": f"Bearer {self.token()}"},
             )
             try:
+                target = destination / name
                 with urllib.request.urlopen(request, timeout=600) as response:
-                    with (destination / name).open("wb") as output:
+                    with target.open("wb") as output:
                         shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
                 raise RuntimeError(
                     f"Google Drive download failed for {name} ({exc.code}): {detail}"
                 ) from exc
+            completed_bytes += target.stat().st_size
+            if on_progress:
+                on_progress(index, len(items), completed_bytes, total_bytes, name)
         return len(items)
 
     def put_bytes(self, path: str, payload: bytes, content_type: str) -> None:
@@ -558,7 +579,78 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 for item in job.get("files", [])
                 if isinstance(item, dict)
             ]
-            image_count = storage.download_folder(source_folder, dataset / "images", expected_names)
+            transfer_started_at = utc_now()
+            transfer_started = time.monotonic()
+            transfer_last_update = 0.0
+            job["transfers"] = {
+                "sourceDownload": {
+                    "state": "running",
+                    "startedAt": transfer_started_at,
+                    "filesCompleted": 0,
+                    "filesTotal": len(expected_names),
+                    "bytesCompleted": 0,
+                    "bytesTotal": sum(
+                        int(item.get("size", 0))
+                        for item in job.get("files", [])
+                        if isinstance(item, dict)
+                    ),
+                    "bytesPerSecond": 0,
+                    "elapsedSeconds": 0,
+                }
+            }
+            update_job(
+                storage,
+                job_root,
+                job,
+                stage="Downloading source images",
+                progress=3,
+            )
+
+            def report_source_transfer(
+                files_completed: int,
+                files_total: int,
+                bytes_completed: int,
+                bytes_total: int,
+                current_file: str,
+            ) -> None:
+                nonlocal transfer_last_update
+                now = time.monotonic()
+                elapsed = max(now - transfer_started, 0.001)
+                finished = files_completed == files_total
+                job["transfers"]["sourceDownload"] = {
+                    "state": "completed" if finished else "running",
+                    "startedAt": transfer_started_at,
+                    **({"completedAt": utc_now()} if finished else {}),
+                    "filesCompleted": files_completed,
+                    "filesTotal": files_total,
+                    "bytesCompleted": bytes_completed,
+                    "bytesTotal": bytes_total,
+                    "bytesPerSecond": round(bytes_completed / elapsed),
+                    "elapsedSeconds": round(elapsed, 1),
+                    "currentFile": current_file,
+                }
+                print(
+                    "Source transfer "
+                    f"{files_completed}/{files_total}: {bytes_completed}/{bytes_total} bytes "
+                    f"at {bytes_completed / elapsed / 1024**2:.1f} MiB/s",
+                    flush=True,
+                )
+                if files_completed == 1 or finished or now - transfer_last_update >= 2:
+                    transfer_last_update = now
+                    update_job(
+                        storage,
+                        job_root,
+                        job,
+                        stage="Downloading source images",
+                        progress=3,
+                    )
+
+            image_count = storage.download_folder(
+                source_folder,
+                dataset / "images",
+                expected_names,
+                report_source_transfer,
+            )
             update_job(
                 storage,
                 job_root,

@@ -36,6 +36,20 @@ type CloudJob = {
   result?: { modelUrl: string; manifestUrl: string };
   storage?: { provider: 'google-drive' | 'sharepoint'; root: string };
   versions?: { openreef: string; openreefGPU: string };
+  transfers?: {
+    sourceDownload?: {
+      state: 'running' | 'completed';
+      startedAt: string;
+      completedAt?: string;
+      filesCompleted: number;
+      filesTotal: number;
+      bytesCompleted: number;
+      bytesTotal: number;
+      bytesPerSecond: number;
+      elapsedSeconds: number;
+      currentFile?: string;
+    };
+  };
 };
 
 type UploadTarget = {
@@ -102,6 +116,7 @@ export function CloudJobs() {
 
   const progress =
     job?.state === 'uploading' ? uploadProgress : (job?.progress ?? 0);
+  const sourceDownload = job?.transfers?.sourceDownload;
 
   const submit = async () => {
     if (!API_URL) {
@@ -308,6 +323,55 @@ export function CloudJobs() {
             <progress max={100} value={progress}>
               {progress}%
             </progress>
+            {sourceDownload && (
+              <section
+                className="cloud-transfer"
+                aria-label="Source transfer log"
+              >
+                <div className="cloud-transfer-heading">
+                  <div>
+                    <strong>{storageLabel(job)} → Runpod</strong>
+                    <small>
+                      {sourceDownload.state === 'running'
+                        ? 'Live source transfer'
+                        : 'Source transfer complete'}
+                    </small>
+                  </div>
+                  <span>{formatDuration(sourceDownload.elapsedSeconds)}</span>
+                </div>
+                <dl className="cloud-transfer-stats">
+                  <div>
+                    <dt>Images</dt>
+                    <dd>
+                      {sourceDownload.filesCompleted}/
+                      {sourceDownload.filesTotal}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Transferred</dt>
+                    <dd>
+                      {formatBytes(sourceDownload.bytesCompleted)} /{' '}
+                      {formatBytes(sourceDownload.bytesTotal)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Average</dt>
+                    <dd>{formatRate(sourceDownload.bytesPerSecond)}</dd>
+                  </div>
+                </dl>
+                <div className="cloud-transfer-log" role="log">
+                  <span>
+                    {sourceDownload.state === 'running'
+                      ? `Downloading ${sourceDownload.currentFile ?? 'source images'}…`
+                      : `Downloaded ${sourceDownload.filesTotal} source images in ${formatDuration(sourceDownload.elapsedSeconds)}.`}
+                  </span>
+                  <span>
+                    Runpod logs retain the same file count, byte total, and
+                    measured throughput.
+                  </span>
+                </div>
+              </section>
+            )}
             {job.state === 'completed' && job.result && (
               <Button onClick={() => setShowViewer(true)}>
                 Open model in viewer
@@ -401,4 +465,15 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 ** 2) return `${Math.ceil(bytes / 1024)} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function formatRate(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+function formatDuration(seconds: number): string {
+  const rounded = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
 }

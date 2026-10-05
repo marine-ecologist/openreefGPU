@@ -52,7 +52,7 @@ export default function Home() {
           </span>
         </div>
 
-        <p className="sidebar-version">OpenReefGPU v0.6.3-gpu.3</p>
+        <p className="sidebar-version">OpenReefGPU v0.6.3-gpu.4</p>
       </aside>
 
       <section

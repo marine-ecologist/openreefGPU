@@ -23,6 +23,19 @@ interface JobFile {
   contentType: string;
 }
 
+interface TransferMetric {
+  state: 'running' | 'completed';
+  startedAt: string;
+  completedAt?: string;
+  filesCompleted: number;
+  filesTotal: number;
+  bytesCompleted: number;
+  bytesTotal: number;
+  bytesPerSecond: number;
+  elapsedSeconds: number;
+  currentFile?: string;
+}
+
 interface JobRecord {
   schemaVersion: 1;
   id: string;
@@ -46,6 +59,9 @@ interface JobRecord {
   result?: {
     model: string;
     manifest: string;
+  };
+  transfers?: {
+    sourceDownload?: TransferMetric;
   };
 }
 
@@ -358,6 +374,7 @@ function publicJob(job: JobRecord, env: Env) {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     error: job.error,
+    transfers: job.transfers,
     result: job.result
       ? {
           modelUrl: `${assetBase}/${encodeURIComponent(job.result.model)}`,

@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-filesystem-dev libboost-graph-dev libboost-iostreams-dev \
     libboost-program-options-dev libboost-serialization-dev libboost-system-dev \
     libceres-dev libcgal-dev libeigen3-dev libglew-dev libglfw3-dev \
-    libglu1-mesa-dev libjpeg-dev libnanoflann-dev libopencv-dev libpng-dev libtiff-dev \
+    libglu1-mesa-dev libjpeg-dev libjxl-dev libnanoflann-dev libopencv-dev libpng-dev libtiff-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN git init /opt/vcglib \
     && git -C /opt/vcglib remote add origin https://github.com/cdcseacave/VCG.git \
@@ -40,7 +40,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.3
 ARG OPENREEF_REF=c5da966804860b500a4f5657c783d9df9de9cbfc
-ARG OPENREEF_GPU_VERSION=0.6.3-gpu.3
+ARG OPENREEF_GPU_VERSION=0.6.3-gpu.4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
