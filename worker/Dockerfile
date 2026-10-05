@@ -48,22 +48,22 @@ RUN git init /opt/vcglib \
       -DOpenMVS_USE_PYTHON=OFF -DOpenMVS_ENABLE_TESTS=OFF \
       -DVCG_ROOT=/opt/vcglib \
     && cmake --build /opt/openMVS/build --parallel "$(nproc)" \
-    && cmake --install /opt/openMVS/build --prefix /opt/openmvs-install \
-    && printf '%s\n' "${OPENMVS_VERSION}" > /opt/openmvs-install/OPENMVS_VERSION
+    && cmake --install /opt/openMVS/build \
+    && printf '%s\n' "${OPENMVS_VERSION}" > /usr/local/OPENMVS_VERSION
 
 FROM colmap/colmap:20260907.8077
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.3
 ARG OPENREEF_REF=c5da966804860b500a4f5657c783d9df9de9cbfc
-ARG OPENREEF_GPU_VERSION=0.6.3-gpu.7
+ARG OPENREEF_GPU_VERSION=0.6.3-gpu.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
     libboost-iostreams-dev libboost-program-options-dev libboost-serialization-dev \
     libceres-dev libglfw3 libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=openmvs-builder /opt/openmvs-install/ /usr/local/
+COPY --from=openmvs-builder /usr/local/ /usr/local/
 COPY --from=openmvs-builder \
     /opt/openMVS/build/bin/InterfaceCOLMAP \
     /opt/openMVS/build/bin/DensifyPointCloud \

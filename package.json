@@ -1,6 +1,6 @@
 {
   "name": "openreef-gpu",
-  "version": "0.6.3-gpu.7",
+  "version": "0.6.3-gpu.8",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
