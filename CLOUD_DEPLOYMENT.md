@@ -119,7 +119,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.6
+ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.7
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -132,8 +132,8 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.6 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.6
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.7 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.7
 ```
 
 The image starts from CUDA-enabled COLMAP and builds OpenMVS with CUDA enabled. It is large, so a
@@ -160,7 +160,7 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.3
-OPENREEF_GPU_VERSION=0.6.3-gpu.6
+OPENREEF_GPU_VERSION=0.6.3-gpu.7
 ```
 
 Optional compact-profile tuning variables are `OPENREEF_MAX_IMAGE_SIZE`,

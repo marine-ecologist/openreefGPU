@@ -38,6 +38,10 @@ assert(
   'The pinned OpenMVS commit must be a full 40-character SHA',
 );
 assert(
+  /^[0-9a-f]{40}$/.test(versions.cgal.commit),
+  'The pinned CGAL commit must be a full 40-character SHA',
+);
+assert(
   versions.openreefGPU.version.startsWith(`${versions.openreef.version}-gpu.`),
   'The openreefGPU version must start with the pinned OpenReef version followed by -gpu.',
 );
@@ -46,6 +50,8 @@ assertDockerArg('OPENREEF_REF', versions.openreef.commit);
 assertDockerArg('OPENREEF_GPU_VERSION', versions.openreefGPU.version);
 assertDockerArg('OPENMVS_VERSION', versions.openMVS.version);
 assertDockerArg('OPENMVS_REF', versions.openMVS.commit);
+assertDockerArg('CGAL_VERSION', versions.cgal.version);
+assertDockerArg('CGAL_REF', versions.cgal.commit);
 assert(
   wrangler.includes(`"OPENREEF_VERSION": "${versions.openreef.version}"`),
   'Cloudflare OPENREEF_VERSION does not match versions.json',

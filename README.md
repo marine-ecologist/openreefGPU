@@ -30,7 +30,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.3-gpu.6`, based on OpenReef `0.6.3`. The suffix may advance for
+The current cloud release is `0.6.3-gpu.7`, based on OpenReef `0.6.3`. The suffix may advance for
 cloud-only changes (`gpu.2`, `gpu.3`) without pretending the desktop pipeline changed.
 
 ## Version contract
@@ -40,6 +40,7 @@ cloud-only changes (`gpu.2`, `gpu.3`) without pretending the desktop pipeline ch
 - the openreefGPU version;
 - the compatible OpenReef release, tag, and immutable commit;
 - the pinned OpenMVS release and Blackwell-compatible commit;
+- the pinned CGAL release and commit required by that OpenMVS build;
 - the job and result schema versions.
 
 The RunPod Docker image fetches that exact OpenReef commit and verifies its package version during
@@ -86,7 +87,7 @@ Build from this repository root:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.6 .
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.7 .
 ```
 
 The Dockerfile packages OpenReef `0.6.3` from its pinned commit, CUDA COLMAP, CUDA OpenMVS, and the
@@ -95,9 +96,10 @@ the required smoke test.
 
 After the repository is published on GitHub, run the **Publish RunPod worker image** workflow. It
 publishes the pinned Linux image to GitHub Container Registry as both
-`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.6` and `:latest`, ready for a RunPod Serverless template.
+`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.7` and `:latest`, ready for a RunPod Serverless template.
 
-The worker pins OpenMVS 2.4.0 plus its upstream Blackwell compatibility fix, compiles CUDA targets
+The worker pins OpenMVS 2.4.0 plus its upstream Blackwell compatibility fix and CGAL 6.0.1,
+compiles CUDA targets
 for Turing through Blackwell (`sm_75`, `sm_86`, `sm_89`, and `sm_120`), and caps native pipeline
 tools at 32 CPU threads by default. Override the ceiling with `OPENREEF_MAX_CORES` only after
 testing the selected worker hardware. The image disables OpenMVS's optional JPEG-XL path because

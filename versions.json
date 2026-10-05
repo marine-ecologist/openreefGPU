@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "openreefGPU": {
-    "version": "0.6.3-gpu.6"
+    "version": "0.6.3-gpu.7"
   },
   "openreef": {
     "version": "0.6.3",
@@ -13,6 +13,11 @@
     "version": "2.4.0",
     "repository": "https://github.com/cdcseacave/openMVS.git",
     "commit": "2d89278c287f11be126e7f46cc403ec4596b7721"
+  },
+  "cgal": {
+    "version": "6.0.1",
+    "repository": "https://github.com/CGAL/cgal.git",
+    "commit": "50cfbde3b84dbeae8338268db2d78fe4fcb522de"
   },
   "contracts": {
     "jobSchema": 1,
