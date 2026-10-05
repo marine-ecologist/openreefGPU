@@ -36,6 +36,14 @@ interface TransferMetric {
   currentFile?: string;
 }
 
+interface TimingMetric {
+  name?: string;
+  state: 'running' | 'completed' | 'failed';
+  startedAt: string;
+  completedAt?: string;
+  elapsedSeconds: number;
+}
+
 interface JobRecord {
   schemaVersion: 1;
   id: string;
@@ -62,6 +70,10 @@ interface JobRecord {
   };
   transfers?: {
     sourceDownload?: TransferMetric;
+  };
+  timings?: {
+    total: TimingMetric;
+    steps: TimingMetric[];
   };
 }
 
@@ -141,6 +153,8 @@ const worker = {
 export default worker;
 
 async function createJob(request: Request, env: Env) {
+  const preparationStartedAt = new Date().toISOString();
+  const preparationStarted = Date.now();
   const body = await parseJson<{
     name?: unknown;
     files?: unknown;
@@ -160,7 +174,7 @@ async function createJob(request: Request, env: Env) {
     ? await filesFromStorageFolder(storage, sourceFolder, body.maxFiles)
     : validateFiles(body.files);
   const id = crypto.randomUUID();
-  const now = new Date().toISOString();
+  const now = preparationStartedAt;
   const record: JobRecord = {
     schemaVersion: 1,
     id,
@@ -173,6 +187,21 @@ async function createJob(request: Request, env: Env) {
     files,
     source,
     versions: deploymentVersions(env),
+    timings: {
+      total: {
+        state: 'running',
+        startedAt: preparationStartedAt,
+        elapsedSeconds: 0,
+      },
+      steps: [
+        {
+          name: 'Preparing job',
+          state: 'running',
+          startedAt: preparationStartedAt,
+          elapsedSeconds: 0,
+        },
+      ],
+    },
   };
 
   await storage.ensureFolder(jobFolder(id));
@@ -197,6 +226,22 @@ async function createJob(request: Request, env: Env) {
           };
         }),
       );
+  const preparedAt = new Date().toISOString();
+  const preparation = record.timings!.steps[0];
+  preparation.state = 'completed';
+  preparation.completedAt = preparedAt;
+  preparation.elapsedSeconds = (Date.now() - preparationStarted) / 1000;
+  record.timings!.total.elapsedSeconds = preparation.elapsedSeconds;
+  if (!sourceFolder) {
+    record.timings!.steps.push({
+      name: 'Browser → Drive upload',
+      state: 'running',
+      startedAt: preparedAt,
+      elapsedSeconds: 0,
+    });
+  }
+  record.updatedAt = preparedAt;
+  await writeJob(env, record);
   return { job: publicJob(record, env), uploads };
 }
 
@@ -248,6 +293,26 @@ async function startJob(jobId: string, env: Env) {
   if (!response.ok || !result.id) {
     throw new HttpError(502, result.error || 'Runpod rejected the job');
   }
+  const queuedAt = new Date().toISOString();
+  finishActiveTiming(job, queuedAt);
+  job.timings ??= {
+    total: {
+      state: 'running',
+      startedAt: job.createdAt,
+      elapsedSeconds: 0,
+    },
+    steps: [],
+  };
+  job.timings.steps.push({
+    name: 'Waiting for GPU worker',
+    state: 'running',
+    startedAt: queuedAt,
+    elapsedSeconds: 0,
+  });
+  job.timings.total.elapsedSeconds = elapsedSeconds(
+    job.timings.total.startedAt,
+    queuedAt,
+  );
   job = {
     ...job,
     state: 'queued',
@@ -375,6 +440,7 @@ function publicJob(job: JobRecord, env: Env) {
     updatedAt: job.updatedAt,
     error: job.error,
     transfers: job.transfers,
+    timings: job.timings,
     result: job.result
       ? {
           modelUrl: `${assetBase}/${encodeURIComponent(job.result.model)}`,
@@ -387,6 +453,28 @@ function publicJob(job: JobRecord, env: Env) {
       root: storage.publicRoot,
     },
   };
+}
+
+function finishActiveTiming(job: JobRecord, completedAt: string) {
+  const steps = job.timings?.steps ?? [];
+  let active: TimingMetric | undefined;
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    if (steps[index].state === 'running') {
+      active = steps[index];
+      break;
+    }
+  }
+  if (!active) return;
+  active.state = 'completed';
+  active.completedAt = completedAt;
+  active.elapsedSeconds = elapsedSeconds(active.startedAt, completedAt);
+}
+
+function elapsedSeconds(startedAt: string, completedAt: string) {
+  return Math.max(
+    0,
+    (new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000,
+  );
 }
 
 function deploymentVersions(env: Env) {

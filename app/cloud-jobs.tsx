@@ -20,6 +20,14 @@ const API_URL = (process.env.NEXT_PUBLIC_OPENREEF_API_URL ?? '').replace(
 );
 const UPLOAD_CHUNK_BYTES = 10 * 1024 * 1024;
 
+type TimingMetric = {
+  name?: string;
+  state: 'running' | 'completed' | 'failed';
+  startedAt: string;
+  completedAt?: string;
+  elapsedSeconds: number;
+};
+
 type CloudJob = {
   id: string;
   name: string;
@@ -50,6 +58,10 @@ type CloudJob = {
       currentFile?: string;
     };
   };
+  timings?: {
+    total: TimingMetric;
+    steps: TimingMetric[];
+  };
 };
 
 type UploadTarget = {
@@ -71,6 +83,7 @@ export function CloudJobs() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showViewer, setShowViewer] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
   const inputRef = useRef<HTMLInputElement>(null);
 
   const totalBytes = useMemo(
@@ -90,6 +103,12 @@ export function CloudJobs() {
         console.error(reason);
       }
     }, 5000);
+    return () => window.clearInterval(timer);
+  }, [job]);
+
+  useEffect(() => {
+    if (!job || !['queued', 'running'].includes(job.state)) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [job]);
 
@@ -117,6 +136,7 @@ export function CloudJobs() {
   const progress =
     job?.state === 'uploading' ? uploadProgress : (job?.progress ?? 0);
   const sourceDownload = job?.transfers?.sourceDownload;
+  const timings = job?.timings;
 
   const submit = async () => {
     if (!API_URL) {
@@ -323,6 +343,34 @@ export function CloudJobs() {
             <progress max={100} value={progress}>
               {progress}%
             </progress>
+            {timings && (
+              <section className="cloud-timings" aria-label="Process timings">
+                <div className="cloud-timings-heading">
+                  <div>
+                    <strong>Process timings</strong>
+                    <small>Live and retained with this job</small>
+                  </div>
+                  <span>
+                    Total{' '}
+                    {formatDuration(liveTimingSeconds(timings.total, clock))}
+                  </span>
+                </div>
+                <ol>
+                  {timings.steps.map((step, index) => (
+                    <li
+                      key={`${step.name ?? 'Step'}-${step.startedAt}-${index}`}
+                      data-state={step.state}
+                    >
+                      <i aria-hidden="true" />
+                      <strong>{step.name ?? `Step ${index + 1}`}</strong>
+                      <time>
+                        {formatDuration(liveTimingSeconds(step, clock))}
+                      </time>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
             {sourceDownload && (
               <section
                 className="cloud-transfer"
@@ -476,4 +524,12 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(rounded / 60);
   const remainder = rounded % 60;
   return minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
+}
+
+function liveTimingSeconds(metric: TimingMetric, now: number): number {
+  if (metric.state !== 'running') return metric.elapsedSeconds;
+  const started = Date.parse(metric.startedAt);
+  return Number.isFinite(started)
+    ? Math.max(metric.elapsedSeconds, (now - started) / 1000)
+    : metric.elapsedSeconds;
 }

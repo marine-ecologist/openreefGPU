@@ -30,7 +30,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.3-gpu.8`, based on OpenReef `0.6.3`. The suffix may advance for
+The current cloud release is `0.6.3-gpu.9`, based on OpenReef `0.6.3`. The suffix may advance for
 cloud-only changes (`gpu.2`, `gpu.3`) without pretending the desktop pipeline changed.
 
 ## Version contract
@@ -87,7 +87,7 @@ Build from this repository root:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.8 .
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.9 .
 ```
 
 The Dockerfile packages OpenReef `0.6.3` from its pinned commit, CUDA COLMAP, CUDA OpenMVS, and the
@@ -96,7 +96,7 @@ the required smoke test.
 
 After the repository is published on GitHub, run the **Publish RunPod worker image** workflow. It
 publishes the pinned Linux image to GitHub Container Registry as both
-`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.8` and `:latest`, ready for a RunPod Serverless template.
+`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.9` and `:latest`, ready for a RunPod Serverless template.
 
 The worker pins OpenMVS 2.4.0 plus its upstream Blackwell compatibility fix and CGAL 6.0.1,
 compiles CUDA targets
@@ -109,6 +109,8 @@ inputs remain supported.
 During each job, the browser status card reports the source transfer from Drive or SharePoint to
 the worker: images completed, bytes copied, elapsed time, and average throughput. The final values
 remain visible after reconstruction begins and are also written to the worker log and job record.
+The same card times the complete run and each queue, reconstruction, and result-upload step so
+successive datasets and worker types can be compared from the retained job record.
 
 ## Storage
 

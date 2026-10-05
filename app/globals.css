@@ -930,6 +930,83 @@ button {
   width: 100%;
   margin-top: 12px;
 }
+.cloud-timings {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #303337;
+  border-radius: 7px;
+  background: #111315;
+}
+.cloud-timings-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.cloud-timings-heading strong,
+.cloud-timings-heading small {
+  display: block;
+}
+.cloud-timings-heading strong {
+  color: #d8d9db;
+  font-size: 11px;
+}
+.cloud-timings-heading small {
+  margin-top: 3px;
+  color: #77797d;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cloud-timings-heading > span {
+  color: var(--workflow-accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+.cloud-timings ol {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.cloud-timings li {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  color: #8b8d91;
+  font-size: 10px;
+}
+.cloud-timings li i {
+  width: 7px;
+  height: 7px;
+  border: 1px solid #55585d;
+  border-radius: 50%;
+  background: #25282c;
+}
+.cloud-timings li[data-state='running'] {
+  color: #e2e3e5;
+}
+.cloud-timings li[data-state='running'] i {
+  border-color: var(--workflow-accent);
+  background: var(--workflow-accent);
+  box-shadow: 0 0 0 3px rgb(0 186 173 / 12%);
+}
+.cloud-timings li[data-state='completed'] i {
+  border-color: #477f79;
+  background: #477f79;
+}
+.cloud-timings li[data-state='failed'] i {
+  border-color: #e74c3c;
+  background: #e74c3c;
+}
+.cloud-timings time {
+  color: #b5b7ba;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
 .cloud-transfer {
   margin-top: 14px;
   padding: 12px;

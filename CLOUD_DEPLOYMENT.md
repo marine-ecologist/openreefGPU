@@ -16,6 +16,11 @@ The browser job screen reports live image count, bytes, elapsed time, and averag
 that transfer and retains the final summary for the rest of the run. Retrying a job downloads the
 source set again unless a persistent Runpod cache is added later.
 
+Every job also keeps a durable timing ledger from submission to viewer-ready output. The main
+screen updates the total and current step every second and retains completed durations for job
+preparation, GPU queue/startup, source download, every OpenReef reconstruction stage, and output
+upload. The same entries are stored in `job.json` for later cost and performance comparisons.
+
 SharePoint remains supported by setting `STORAGE_PROVIDER=sharepoint`; see the final section.
 
 ## Current live deployment
@@ -119,7 +124,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.8
+ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.9
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -132,8 +137,8 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.8 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.8
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.9 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.9
 ```
 
 The image starts from CUDA-enabled COLMAP and builds OpenMVS with CUDA enabled. It is large, so a
@@ -160,7 +165,7 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.3
-OPENREEF_GPU_VERSION=0.6.3-gpu.8
+OPENREEF_GPU_VERSION=0.6.3-gpu.9
 ```
 
 Optional compact-profile tuning variables are `OPENREEF_MAX_IMAGE_SIZE`,

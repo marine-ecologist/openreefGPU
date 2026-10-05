@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -568,6 +569,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     job_root = storage.job_path(job_id)
     job = read_job(storage, job_root)
     job["state"] = "running"
+    start_timing_step(job, "Drive → Runpod download")
     update_job(storage, job_root, job, stage="Downloading source images", progress=3)
 
     try:
@@ -629,6 +631,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                     "elapsedSeconds": round(elapsed, 1),
                     "currentFile": current_file,
                 }
+                touch_timing_step(job, "Drive → Runpod download", elapsed)
                 print(
                     "Source transfer "
                     f"{files_completed}/{files_total}: {bytes_completed}/{bytes_total} bytes "
@@ -651,6 +654,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 expected_names,
                 report_source_transfer,
             )
+            start_timing_step(job, "Preparing source images")
             update_job(
                 storage,
                 job_root,
@@ -658,14 +662,18 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 stage=f"Preparing {image_count} source images",
                 progress=5,
             )
+
+            def report_pipeline_stage(stage: str, progress: int) -> None:
+                start_timing_step(job, stage)
+                update_job(storage, job_root, job, stage=stage, progress=progress)
+
             run_pipeline(
                 dataset,
-                lambda stage, progress: update_job(
-                    storage, job_root, job, stage=stage, progress=progress
-                ),
+                report_pipeline_stage,
             )
 
             artifacts = select_result_artifacts(dataset)
+            start_timing_step(job, "Uploading results to Drive")
             update_job(storage, job_root, job, stage="Uploading compact web model", progress=96)
             output_root = f"{job_root}/output"
             uploaded: list[dict[str, Any]] = []
@@ -697,6 +705,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             model_name = next(item["name"] for item in uploaded if item["role"] == "model")
             job["state"] = "completed"
             job["result"] = {"model": model_name, "manifest": "manifest.json"}
+            complete_timings(job, "completed")
             update_job(storage, job_root, job, stage="Ready to view", progress=100)
             return {
                 "job_id": job_id,
@@ -707,6 +716,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         job["state"] = "failed"
         job["error"] = str(exc)[:1_000]
+        complete_timings(job, "failed")
         try:
             update_job(
                 storage,
@@ -827,6 +837,109 @@ def update_job(
         (json.dumps(job, indent=2) + "\n").encode(),
         "application/json",
     )
+
+
+def start_timing_step(job: dict[str, Any], name: str) -> None:
+    """Finish the active step and start a durable timing entry."""
+    timings = ensure_timings(job)
+    now = utc_now()
+    steps = timings["steps"]
+    active = next((step for step in reversed(steps) if step.get("state") == "running"), None)
+    if active and active.get("name") == name:
+        active["elapsedSeconds"] = elapsed_since(str(active["startedAt"]))
+        touch_total_timing(timings)
+        return
+    if active:
+        finish_timing_entry(active, "completed", now)
+    steps.append(
+        {
+            "name": name,
+            "state": "running",
+            "startedAt": now,
+            "elapsedSeconds": 0,
+        }
+    )
+    touch_total_timing(timings)
+    print(f"Timing started: {name}", flush=True)
+
+
+def touch_timing_step(job: dict[str, Any], name: str, elapsed: float) -> None:
+    timings = ensure_timings(job)
+    active = next(
+        (
+            step
+            for step in reversed(timings["steps"])
+            if step.get("state") == "running" and step.get("name") == name
+        ),
+        None,
+    )
+    if active:
+        active["elapsedSeconds"] = round(max(0.0, elapsed), 1)
+    touch_total_timing(timings)
+
+
+def complete_timings(job: dict[str, Any], state: str) -> None:
+    timings = ensure_timings(job)
+    now = utc_now()
+    active = next(
+        (step for step in reversed(timings["steps"]) if step.get("state") == "running"),
+        None,
+    )
+    if active:
+        finish_timing_entry(active, state, now)
+        print(
+            f"Timing finished: {active['name']} ({active['elapsedSeconds']:.1f}s)",
+            flush=True,
+        )
+    total = timings["total"]
+    total["state"] = state
+    total["completedAt"] = now
+    total["elapsedSeconds"] = elapsed_since(str(total["startedAt"]), now)
+
+
+def ensure_timings(job: dict[str, Any]) -> dict[str, Any]:
+    timings = job.setdefault(
+        "timings",
+        {
+            "total": {
+                "state": "running",
+                "startedAt": str(job.get("createdAt") or utc_now()),
+                "elapsedSeconds": 0,
+            },
+            "steps": [],
+        },
+    )
+    timings.setdefault("steps", [])
+    timings.setdefault(
+        "total",
+        {
+            "state": "running",
+            "startedAt": str(job.get("createdAt") or utc_now()),
+            "elapsedSeconds": 0,
+        },
+    )
+    return timings
+
+
+def touch_total_timing(timings: dict[str, Any]) -> None:
+    total = timings["total"]
+    total["elapsedSeconds"] = elapsed_since(str(total["startedAt"]))
+
+
+def finish_timing_entry(entry: dict[str, Any], state: str, completed_at: str) -> None:
+    entry["state"] = state
+    entry["completedAt"] = completed_at
+    entry["elapsedSeconds"] = elapsed_since(str(entry["startedAt"]), completed_at)
+
+
+def elapsed_since(started_at: str, completed_at: str | None = None) -> float:
+    start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    end = (
+        datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        if completed_at
+        else datetime.now(timezone.utc)
+    )
+    return round(max(0.0, (end - start).total_seconds()), 1)
 
 
 def validate_job_root(root: str, variable: str) -> None:
