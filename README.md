@@ -97,6 +97,7 @@ Use the generated `openreef-benchmark-*.json` records for the M2, M5, and cloud 
 helper combines local MarkerTag time with sparse reconstruction to match the cloud timer. Run each
 machine against a clean dataset workspace containing the same `images/` folder; the helper refuses
 existing `colmap/`, `openmvs/`, or `models/` outputs so cached work cannot distort the result.
+The current 248-image cloud and M2 Max results are recorded in [BENCHMARKS.md](BENCHMARKS.md).
 
 For repeated cloud benchmarks, attach a Runpod volume to the endpoint. The worker automatically
 uses `/runpod-volume/openreef-source-cache`: the first run fills it from Google Drive, and later runs
