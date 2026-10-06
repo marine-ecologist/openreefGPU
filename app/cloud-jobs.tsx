@@ -92,6 +92,36 @@ export function CloudJobs() {
   );
 
   useEffect(() => {
+    const jobId = new URLSearchParams(window.location.search).get('job');
+    if (!jobId || !/^[0-9a-f-]{36}$/i.test(jobId)) return;
+
+    let cancelled = false;
+    setSubmitting(true);
+    setError(null);
+    api<CloudJob>(`/v1/jobs/${jobId}`)
+      .then((next) => {
+        if (cancelled) return;
+        setJob(next);
+        if (next.state === 'completed' && next.result) setShowViewer(true);
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : 'Could not load the linked cloud job.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setSubmitting(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.state)) return;
     const timer = window.setInterval(async () => {
       try {
