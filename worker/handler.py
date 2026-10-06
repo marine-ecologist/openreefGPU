@@ -40,6 +40,7 @@ JOB_SCHEMA_VERSION = 1
 TransferProgress = Callable[[int, int, int, int, str], None]
 TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS = 5
+GOOGLE_DRIVE_REQUEST_ATTEMPTS = 5
 
 
 class WorkerConfigurationError(RuntimeError):
@@ -303,18 +304,45 @@ class GoogleDriveClient:
         headers: dict[str, str] | None = None,
         upload: bool = False,
     ) -> Any:
-        request_headers = {"Authorization": f"Bearer {self.token()}"}
-        request_headers.update(headers or {})
         root = GOOGLE_UPLOAD_ROOT if upload else GOOGLE_DRIVE_ROOT
-        request = urllib.request.Request(
-            f"{root}{path}", data=data, headers=request_headers, method=method
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=600) as response:
-                payload = response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"Google Drive returned {exc.code}: {detail}") from exc
+        last_error: BaseException | None = None
+        for attempt in range(1, GOOGLE_DRIVE_REQUEST_ATTEMPTS + 1):
+            request_headers = {"Authorization": f"Bearer {self.token()}"}
+            request_headers.update(headers or {})
+            request = urllib.request.Request(
+                f"{root}{path}", data=data, headers=request_headers, method=method
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=600) as response:
+                    payload = response.read()
+                break
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                if exc.code not in TRANSIENT_HTTP_STATUS_CODES:
+                    raise RuntimeError(f"Google Drive returned {exc.code}: {detail}") from exc
+                reason = f"HTTP {exc.code}"
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                http.client.IncompleteRead,
+            ) as exc:
+                last_error = exc
+                reason = str(exc)
+
+            if attempt == GOOGLE_DRIVE_REQUEST_ATTEMPTS:
+                raise RuntimeError(
+                    f"Google Drive request failed after {GOOGLE_DRIVE_REQUEST_ATTEMPTS} "
+                    f"attempts: {reason}"
+                ) from last_error
+            delay = min(2 ** (attempt - 1), 16)
+            print(
+                f"Google Drive request retry {attempt}/{GOOGLE_DRIVE_REQUEST_ATTEMPTS - 1} "
+                f"for {method} {path.split('?', 1)[0]} after {reason}; waiting {delay}s",
+                flush=True,
+            )
+            time.sleep(delay)
         if not payload:
             return None
         content_type = response.headers.get_content_type()
