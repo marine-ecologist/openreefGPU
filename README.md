@@ -80,6 +80,21 @@ npm run dev
 Set `NEXT_PUBLIC_OPENREEF_API_URL` when testing cloud submission. Without it, the viewer and example
 models still work but GPU submission remains disabled.
 
+### Local compute benchmark
+
+Use the benchmark helper when comparing Apple Silicon machines with a completed RunPod job. It
+runs the desktop pipeline with the deployed compact output profile, disables COLMAP GPU for the
+current macOS CPU-only build, and writes per-stage plus compute-only timings to JSON. Google Drive
+transfer is not included.
+
+```bash
+python3 scripts/benchmark-local.py /path/to/dataset \
+  --openreef-dir /Users/rof011/openreef
+```
+
+Use the generated `openreef-benchmark-*.json` records for the M2, M5, and cloud comparison. The
+helper combines local MarkerTag time with sparse reconstruction to match the cloud timer.
+
 ## RunPod image
 
 Build from this repository root:
