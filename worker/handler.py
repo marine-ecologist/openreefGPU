@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import mimetypes
 import os
@@ -37,6 +38,8 @@ STAGE_PROGRESS = {
 }
 JOB_SCHEMA_VERSION = 1
 TransferProgress = Callable[[int, int, int, int, str], None]
+TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS = 5
 
 
 class WorkerConfigurationError(RuntimeError):
@@ -365,24 +368,63 @@ class GoogleDriveClient:
         for index, item in enumerate(items, start=1):
             name = safe_file_name(item["name"])
             print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
-            request = urllib.request.Request(
-                f"{GOOGLE_DRIVE_ROOT}/files/{urllib.parse.quote(item['id'])}?alt=media",
-                headers={"Authorization": f"Bearer {self.token()}"},
-            )
-            try:
-                target = destination / name
-                with urllib.request.urlopen(request, timeout=600) as response:
-                    with target.open("wb") as output:
-                        shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
-            except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="replace")[:500]
-                raise RuntimeError(
-                    f"Google Drive download failed for {name} ({exc.code}): {detail}"
-                ) from exc
+            target = destination / name
+            self._download_file(item, target)
             completed_bytes += target.stat().st_size
             if on_progress:
                 on_progress(index, len(items), completed_bytes, total_bytes, name)
         return len(items)
+
+    def _download_file(self, item: dict[str, Any], target: Path) -> None:
+        """Download one Drive file, retrying only transient transport failures."""
+        name = safe_file_name(str(item["name"]))
+        temporary = target.with_name(f".{target.name}.part")
+        url = f"{GOOGLE_DRIVE_ROOT}/files/{urllib.parse.quote(str(item['id']))}?alt=media"
+        last_error: BaseException | None = None
+        for attempt in range(1, GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS + 1):
+            request = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {self.token()}"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=600) as response:
+                    with temporary.open("wb") as output:
+                        shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
+                temporary.replace(target)
+                return
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                if exc.code not in TRANSIENT_HTTP_STATUS_CODES:
+                    raise RuntimeError(
+                        f"Google Drive download failed for {name} ({exc.code}): {detail}"
+                    ) from exc
+                reason = f"HTTP {exc.code}"
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                http.client.IncompleteRead,
+            ) as exc:
+                last_error = exc
+                reason = str(exc)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+            if attempt == GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS:
+                break
+            delay = min(2 ** (attempt - 1), 16)
+            print(
+                f"Google Drive download retry {attempt}/{GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS - 1} "
+                f"for {name} after {reason}; waiting {delay}s",
+                flush=True,
+            )
+            time.sleep(delay)
+
+        raise RuntimeError(
+            f"Google Drive download failed for {name} after "
+            f"{GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS} attempts: {last_error}"
+        ) from last_error
 
     def put_bytes(self, path: str, payload: bytes, content_type: str) -> None:
         parts = path.split("/")

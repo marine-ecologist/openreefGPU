@@ -1,3 +1,5 @@
+import io
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -87,14 +89,45 @@ def test_google_drive_provider_configuration(monkeypatch: pytest.MonkeyPatch) ->
     assert google_query_value("O'Reef\\2026") == "O\\'Reef\\\\2026"
 
 
+def test_google_drive_download_retries_transient_server_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = object.__new__(GoogleDriveClient)
+    monkeypatch.setattr(client, "token", lambda: "access-token")
+    calls = 0
+
+    def open_request(*_args: object, **_kwargs: object) -> io.BytesIO:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise urllib.error.HTTPError(
+                "https://drive.example/file",
+                502,
+                "Bad Gateway",
+                {},
+                io.BytesIO(b"temporary failure"),
+            )
+        return io.BytesIO(b"image bytes")
+
+    monkeypatch.setattr("worker.handler.urllib.request.urlopen", open_request)
+    monkeypatch.setattr("worker.handler.time.sleep", lambda _delay: None)
+    target = tmp_path / "IMG_0001.JPG"
+
+    client._download_file({"id": "file-id", "name": target.name}, target)
+
+    assert calls == 2
+    assert target.read_bytes() == b"image bytes"
+    assert not (tmp_path / ".IMG_0001.JPG.part").exists()
+
+
 def test_worker_rejects_a_mismatched_openreef_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.10")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.11")
     payload = {
         "openreef_version": "0.6.4",
-        "openreef_gpu_version": "0.6.3-gpu.10",
+        "openreef_gpu_version": "0.6.3-gpu.11",
     }
 
     with pytest.raises(ValueError, match="does not match"):
@@ -103,13 +136,13 @@ def test_worker_rejects_a_mismatched_openreef_version(
 
 def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.10")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.11")
     payload = {
         "openreef_version": "0.6.3",
-        "openreef_gpu_version": "0.6.3-gpu.10",
+        "openreef_gpu_version": "0.6.3-gpu.11",
     }
 
     assert validate_version_contract(payload, "0.6.3") == {
         "openreef": "0.6.3",
-        "openreefGPU": "0.6.3-gpu.10",
+        "openreefGPU": "0.6.3-gpu.11",
     }

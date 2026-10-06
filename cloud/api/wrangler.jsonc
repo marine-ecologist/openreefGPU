@@ -11,6 +11,6 @@
     "STORAGE_PROVIDER": "google-drive",
     "GOOGLE_DRIVE_JOB_ROOT": "jobs",
     "OPENREEF_VERSION": "0.6.3",
-    "OPENREEF_GPU_VERSION": "0.6.3-gpu.10",
+    "OPENREEF_GPU_VERSION": "0.6.3-gpu.11",
   },
 }
