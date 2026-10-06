@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS = 5
 GOOGLE_DRIVE_REQUEST_ATTEMPTS = 5
 GOOGLE_DRIVE_UPLOAD_ATTEMPTS = 5
+GOOGLE_DRIVE_DOWNLOAD_WORKERS = 8
 
 
 class WorkerConfigurationError(RuntimeError):
@@ -400,6 +402,7 @@ class GoogleDriveClient:
         if cache_folder:
             cache_folder.mkdir(parents=True, exist_ok=True)
             print(f"Source cache enabled at {cache_folder}", flush=True)
+        pending: list[tuple[int, dict[str, Any], Path, Path | None, int, str]] = []
         for index, item in enumerate(items, start=1):
             name = safe_file_name(item["name"])
             target = destination / name
@@ -409,22 +412,61 @@ class GoogleDriveClient:
                 cache_hits += 1
                 print(f"Using cached source image {index}/{len(items)}: {name}", flush=True)
                 target.symlink_to(cache_target)
-            else:
-                print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
-                download_target = cache_target or target
-                self._download_file(item, download_target)
-                if cache_target:
-                    target.symlink_to(cache_target)
-            completed_bytes += target.stat().st_size
-            if on_progress:
-                on_progress(
-                    index,
-                    len(items),
-                    completed_bytes,
-                    total_bytes,
-                    name,
-                    cache_hits,
+                completed_bytes += target.stat().st_size
+                if on_progress:
+                    on_progress(
+                        cache_hits,
+                        len(items),
+                        completed_bytes,
+                        total_bytes,
+                        name,
+                        cache_hits,
+                    )
+                continue
+            pending.append((index, item, cache_target or target, cache_target, expected_size, name))
+
+        if pending:
+            # list_files() has already authenticated this client, so every downloader
+            # can reuse the same cached access token.
+            configured_workers = int(
+                os.environ.get(
+                    "OPENREEF_SOURCE_DOWNLOAD_WORKERS",
+                    str(GOOGLE_DRIVE_DOWNLOAD_WORKERS),
                 )
+            )
+            worker_count = max(1, min(configured_workers, 16, len(pending)))
+            print(
+                f"Downloading {len(pending)} source images with {worker_count} workers",
+                flush=True,
+            )
+
+            def download(
+                plan: tuple[int, dict[str, Any], Path, Path | None, int, str],
+            ) -> tuple[int, Path, Path | None, int, str]:
+                index, item, download_target, cache_target, expected_size, name = plan
+                print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
+                self._download_file(item, download_target)
+                return index, download_target, cache_target, expected_size, name
+
+            completed_files = cache_hits
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {executor.submit(download, plan): plan for plan in pending}
+                for future in as_completed(futures):
+                    _index, download_target, cache_target, expected_size, name = future.result()
+                    target = destination / name
+                    if cache_target:
+                        target.symlink_to(cache_target)
+                    completed_files += 1
+                    completed_bytes += expected_size or download_target.stat().st_size
+                    if on_progress:
+                        on_progress(
+                            completed_files,
+                            len(items),
+                            completed_bytes,
+                            total_bytes,
+                            name,
+                            cache_hits,
+                        )
         return len(items)
 
     def _download_file(self, item: dict[str, Any], target: Path) -> None:

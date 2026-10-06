@@ -105,6 +105,32 @@ def pipeline_stage(line: str) -> str | None:
     return match.group(3)
 
 
+def mac_hardware() -> dict[str, str]:
+    """Return stable, non-identifying Mac hardware fields when available."""
+    if platform.system() != "Darwin":
+        return {}
+    try:
+        completed = subprocess.run(
+            ["system_profiler", "SPHardwareDataType", "-json"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        records = json.loads(completed.stdout).get("SPHardwareDataType", [])
+        hardware = records[0] if records else {}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return {}
+    allowed = (
+        "machine_name",
+        "machine_model",
+        "chip_type",
+        "number_processors",
+        "physical_memory",
+    )
+    return {key: str(hardware[key]) for key in allowed if hardware.get(key)}
+
+
 def main() -> int:
     args = parser().parse_args()
     if args.cores < 1:
@@ -178,6 +204,7 @@ def main() -> int:
             "processor": platform.processor(),
             "logicalCpuCount": os.cpu_count(),
             "coresUsed": args.cores,
+            "macHardware": mac_hardware(),
         },
         "settings": {
             "colmapGpu": False,

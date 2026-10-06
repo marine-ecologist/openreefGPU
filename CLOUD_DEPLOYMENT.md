@@ -125,7 +125,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.14
+ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.15
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -138,8 +138,8 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.14 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.14
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.15 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.15
 ```
 
 The image starts from CUDA-enabled COLMAP and builds OpenMVS with CUDA enabled. It is large, so a
@@ -166,7 +166,7 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.3
-OPENREEF_GPU_VERSION=0.6.3-gpu.14
+OPENREEF_GPU_VERSION=0.6.3-gpu.15
 ```
 
 Optional compact-profile tuning variables are `OPENREEF_MAX_IMAGE_SIZE`,
@@ -176,6 +176,8 @@ uses full-resolution texture input with OpenMVS seam leveling and sharpening dis
 OpenMVS 2.4 seam solver produced clipped black/red texture patches on the reef survey validation
 set. `OPENREEF_MAX_CORES` defaults to `32` to avoid passing very
 large cloud-host CPU counts into COLMAP and OpenMVS.
+`OPENREEF_SOURCE_DOWNLOAD_WORKERS` controls concurrent Google Drive downloads (default `8`,
+maximum `16`) and only changes transfer time, not reconstruction output.
 
 ### Optional persistent source cache
 
