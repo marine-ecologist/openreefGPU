@@ -13,8 +13,8 @@ reconstructions.
 
 Each worker copies its job's source images from Drive to ephemeral local disk before processing.
 The browser job screen reports live image count, bytes, elapsed time, and average throughput during
-that transfer and retains the final summary for the rest of the run. Retrying a job downloads the
-source set again unless a persistent Runpod cache is added later.
+that transfer and retains the final summary for the rest of the run. When a Runpod volume is
+attached, the worker keeps one persistent copy of each source image and reuses it on later jobs.
 
 Every job also keeps a durable timing ledger from submission to viewer-ready output. The main
 screen updates the total and current step every second and retains completed durations for job
@@ -31,6 +31,7 @@ The initial Google Drive deployment is available at:
 Browser: https://marine-ecologist.github.io/openreefGPU/
 API:     https://openreef-gpu-api.openreef-gpu.workers.dev
 RunPod:  endpoint 93jkogjuc9l6pu (openreef-gpu)
+Cache:   openreef-serverless-cache (10 GB Standard, US-NE-1)
 ```
 
 GitHub Actions injects the API address from the repository variable `OPENREEF_API_URL`. Cloudflare
@@ -124,7 +125,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.12
+ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.13
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -137,8 +138,8 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.12 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.12
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.13 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.13
 ```
 
 The image starts from CUDA-enabled COLMAP and builds OpenMVS with CUDA enabled. It is large, so a
@@ -165,7 +166,7 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.3
-OPENREEF_GPU_VERSION=0.6.3-gpu.12
+OPENREEF_GPU_VERSION=0.6.3-gpu.13
 ```
 
 Optional compact-profile tuning variables are `OPENREEF_MAX_IMAGE_SIZE`,
@@ -175,6 +176,21 @@ uses full-resolution texture input with OpenMVS seam leveling and sharpening dis
 OpenMVS 2.4 seam solver produced clipped black/red texture patches on the reef survey validation
 set. `OPENREEF_MAX_CORES` defaults to `32` to avoid passing very
 large cloud-host CPU counts into COLMAP and OpenMVS.
+
+### Optional persistent source cache
+
+Attach a Runpod Network Volume to the endpoint to avoid downloading an unchanged survey from
+Google Drive for every benchmark. Serverless mounts the volume at `/runpod-volume`; the worker
+detects that mount automatically and stores source images under
+`/runpod-volume/openreef-source-cache`. The first job warms the cache, and later jobs for the same
+Drive folder reuse files whose names and Drive-reported byte sizes still match. Job outputs always
+return to Google Drive.
+
+The browser transfer panel reports cache hits separately from Drive downloads. Source staging is
+still timed, while compute-only comparisons remain independent of both Drive and cache time.
+Set `OPENREEF_SOURCE_CACHE_DIR` to use a different mounted path, or set it to an empty value to
+disable caching. Keep Max workers at `1` for bounded benchmarks; concurrent writers to one mounted
+volume require additional coordination.
 
 Record the Runpod endpoint ID and create a scoped Runpod API key for the broker.
 

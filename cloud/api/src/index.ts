@@ -34,6 +34,8 @@ interface TransferMetric {
   bytesPerSecond: number;
   elapsedSeconds: number;
   currentFile?: string;
+  cacheHits?: number;
+  filesDownloaded?: number;
 }
 
 interface TimingMetric {

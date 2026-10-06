@@ -15,6 +15,7 @@ from worker.handler import (
     safe_file_name,
     select_expected_files,
     select_result_artifacts,
+    source_cache_folder,
     stage_from_output,
     validate_version_contract,
 )
@@ -155,14 +156,55 @@ def test_google_drive_request_retries_transient_server_errors(
     assert calls == 2
 
 
+def test_google_drive_source_cache_reuses_and_populates_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache_root = tmp_path / "cache"
+    destination = tmp_path / "dataset" / "images"
+    monkeypatch.setenv("OPENREEF_SOURCE_CACHE_DIR", str(cache_root))
+    client = object.__new__(GoogleDriveClient)
+    items = [
+        {"id": "cached-id", "name": "IMG_0001.JPG", "size": "6"},
+        {"id": "new-id", "name": "IMG_0002.JPG", "size": "8"},
+    ]
+    monkeypatch.setattr(client, "list_files", lambda _source: items)
+    cache_folder = source_cache_folder("reefplot/images")
+    assert cache_folder is not None
+    cache_folder.mkdir(parents=True)
+    (cache_folder / "IMG_0001.JPG").write_bytes(b"cached")
+
+    def download(item: dict[str, object], target: Path) -> None:
+        assert item["id"] == "new-id"
+        target.write_bytes(b"new-data")
+
+    monkeypatch.setattr(client, "_download_file", download)
+    progress: list[tuple[int, int]] = []
+
+    count = client.download_folder(
+        "reefplot/images",
+        destination,
+        on_progress=lambda completed, _total, _bytes, _bytes_total, _name, hits: (
+            progress.append((completed, hits))
+        ),
+    )
+
+    assert count == 2
+    assert progress == [(1, 1), (2, 1)]
+    assert (destination / "IMG_0001.JPG").is_symlink()
+    assert (destination / "IMG_0002.JPG").is_symlink()
+    assert (destination / "IMG_0001.JPG").read_bytes() == b"cached"
+    assert (destination / "IMG_0002.JPG").read_bytes() == b"new-data"
+    assert (cache_folder / "IMG_0002.JPG").read_bytes() == b"new-data"
+
+
 def test_worker_rejects_a_mismatched_openreef_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.12")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.13")
     payload = {
         "openreef_version": "0.6.4",
-        "openreef_gpu_version": "0.6.3-gpu.12",
+        "openreef_gpu_version": "0.6.3-gpu.13",
     }
 
     with pytest.raises(ValueError, match="does not match"):
@@ -171,13 +213,13 @@ def test_worker_rejects_a_mismatched_openreef_version(
 
 def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.12")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.13")
     payload = {
         "openreef_version": "0.6.3",
-        "openreef_gpu_version": "0.6.3-gpu.12",
+        "openreef_gpu_version": "0.6.3-gpu.13",
     }
 
     assert validate_version_contract(payload, "0.6.3") == {
         "openreef": "0.6.3",
-        "openreefGPU": "0.6.3-gpu.12",
+        "openreefGPU": "0.6.3-gpu.13",
     }

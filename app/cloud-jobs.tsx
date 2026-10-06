@@ -56,6 +56,8 @@ type CloudJob = {
       bytesPerSecond: number;
       elapsedSeconds: number;
       currentFile?: string;
+      cacheHits?: number;
+      filesDownloaded?: number;
     };
   };
   timings?: {
@@ -96,8 +98,6 @@ export function CloudJobs() {
     if (!jobId || !/^[0-9a-f-]{36}$/i.test(jobId)) return;
 
     let cancelled = false;
-    setSubmitting(true);
-    setError(null);
     api<CloudJob>(`/v1/jobs/${jobId}`)
       .then((next) => {
         if (cancelled) return;
@@ -408,11 +408,15 @@ export function CloudJobs() {
               >
                 <div className="cloud-transfer-heading">
                   <div>
-                    <strong>{storageLabel(job)} → Runpod</strong>
+                    <strong>
+                      {(sourceDownload.cacheHits ?? 0) > 0
+                        ? 'Runpod source cache'
+                        : `${storageLabel(job)} → Runpod`}
+                    </strong>
                     <small>
                       {sourceDownload.state === 'running'
-                        ? 'Live source transfer'
-                        : 'Source transfer complete'}
+                        ? 'Live source staging'
+                        : 'Source staging complete'}
                     </small>
                   </div>
                   <span>{formatDuration(sourceDownload.elapsedSeconds)}</span>
@@ -426,7 +430,7 @@ export function CloudJobs() {
                     </dd>
                   </div>
                   <div>
-                    <dt>Transferred</dt>
+                    <dt>Staged</dt>
                     <dd>
                       {formatBytes(sourceDownload.bytesCompleted)} /{' '}
                       {formatBytes(sourceDownload.bytesTotal)}
@@ -436,12 +440,19 @@ export function CloudJobs() {
                     <dt>Average</dt>
                     <dd>{formatRate(sourceDownload.bytesPerSecond)}</dd>
                   </div>
+                  <div>
+                    <dt>Cache hits</dt>
+                    <dd>
+                      {sourceDownload.cacheHits ?? 0}/
+                      {sourceDownload.filesCompleted}
+                    </dd>
+                  </div>
                 </dl>
                 <div className="cloud-transfer-log" role="log">
                   <span>
                     {sourceDownload.state === 'running'
-                      ? `Downloading ${sourceDownload.currentFile ?? 'source images'}…`
-                      : `Downloaded ${sourceDownload.filesTotal} source images in ${formatDuration(sourceDownload.elapsedSeconds)}.`}
+                      ? `Staging ${sourceDownload.currentFile ?? 'source images'}…`
+                      : `Staged ${sourceDownload.filesTotal} source images in ${formatDuration(sourceDownload.elapsedSeconds)}; ${sourceDownload.cacheHits ?? 0} reused from Runpod storage.`}
                   </span>
                   <span>
                     Runpod logs retain the same file count, byte total, and

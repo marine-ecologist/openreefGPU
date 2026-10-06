@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import mimetypes
@@ -37,7 +38,7 @@ STAGE_PROGRESS = {
     "Texture mesh": 92,
 }
 JOB_SCHEMA_VERSION = 1
-TransferProgress = Callable[[int, int, int, int, str], None]
+TransferProgress = Callable[[int, int, int, int, str, int], None]
 TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS = 5
 GOOGLE_DRIVE_REQUEST_ATTEMPTS = 5
@@ -168,7 +169,7 @@ class GraphClient:
                     shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
             completed_bytes += target.stat().st_size
             if on_progress:
-                on_progress(index, len(items), completed_bytes, total_bytes, name)
+                on_progress(index, len(items), completed_bytes, total_bytes, name, 0)
         return len(items)
 
     def put_bytes(self, path: str, payload: bytes, content_type: str) -> None:
@@ -393,20 +394,42 @@ class GoogleDriveClient:
             raise RuntimeError("The Google Drive input folder contains no source images")
         total_bytes = sum(int(item.get("size") or 0) for item in items)
         completed_bytes = 0
+        cache_hits = 0
+        cache_folder = source_cache_folder(source)
+        if cache_folder:
+            cache_folder.mkdir(parents=True, exist_ok=True)
+            print(f"Source cache enabled at {cache_folder}", flush=True)
         for index, item in enumerate(items, start=1):
             name = safe_file_name(item["name"])
-            print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
             target = destination / name
-            self._download_file(item, target)
+            expected_size = int(item.get("size") or 0)
+            cache_target = cache_folder / name if cache_folder else None
+            if cache_target and cache_file_matches(cache_target, expected_size):
+                cache_hits += 1
+                print(f"Using cached source image {index}/{len(items)}: {name}", flush=True)
+                target.symlink_to(cache_target)
+            else:
+                print(f"Downloading source image {index}/{len(items)}: {name}", flush=True)
+                download_target = cache_target or target
+                self._download_file(item, download_target)
+                if cache_target:
+                    target.symlink_to(cache_target)
             completed_bytes += target.stat().st_size
             if on_progress:
-                on_progress(index, len(items), completed_bytes, total_bytes, name)
+                on_progress(
+                    index,
+                    len(items),
+                    completed_bytes,
+                    total_bytes,
+                    name,
+                    cache_hits,
+                )
         return len(items)
 
     def _download_file(self, item: dict[str, Any], target: Path) -> None:
         """Download one Drive file, retrying only transient transport failures."""
         name = safe_file_name(str(item["name"]))
-        temporary = target.with_name(f".{target.name}.part")
+        temporary = target.with_name(f".{target.name}.part-{os.getpid()}-{time.time_ns()}")
         url = f"{GOOGLE_DRIVE_ROOT}/files/{urllib.parse.quote(str(item['id']))}?alt=media"
         last_error: BaseException | None = None
         for attempt in range(1, GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS + 1):
@@ -639,8 +662,8 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     job_root = storage.job_path(job_id)
     job = read_job(storage, job_root)
     job["state"] = "running"
-    start_timing_step(job, "Drive → Runpod download")
-    update_job(storage, job_root, job, stage="Downloading source images", progress=3)
+    start_timing_step(job, "Source staging")
+    update_job(storage, job_root, job, stage="Staging source images", progress=3)
 
     try:
         with tempfile.TemporaryDirectory(prefix=f"openreef-{job_id[:8]}-") as temporary:
@@ -668,13 +691,15 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                     ),
                     "bytesPerSecond": 0,
                     "elapsedSeconds": 0,
+                    "cacheHits": 0,
+                    "filesDownloaded": 0,
                 }
             }
             update_job(
                 storage,
                 job_root,
                 job,
-                stage="Downloading source images",
+                stage="Staging source images",
                 progress=3,
             )
 
@@ -684,6 +709,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 bytes_completed: int,
                 bytes_total: int,
                 current_file: str,
+                cache_hits: int,
             ) -> None:
                 nonlocal transfer_last_update
                 now = time.monotonic()
@@ -700,12 +726,15 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                     "bytesPerSecond": round(bytes_completed / elapsed),
                     "elapsedSeconds": round(elapsed, 1),
                     "currentFile": current_file,
+                    "cacheHits": cache_hits,
+                    "filesDownloaded": files_completed - cache_hits,
                 }
-                touch_timing_step(job, "Drive → Runpod download", elapsed)
+                touch_timing_step(job, "Source staging", elapsed)
                 print(
-                    "Source transfer "
+                    "Source staging "
                     f"{files_completed}/{files_total}: {bytes_completed}/{bytes_total} bytes "
-                    f"at {bytes_completed / elapsed / 1024**2:.1f} MiB/s",
+                    f"at {bytes_completed / elapsed / 1024**2:.1f} MiB/s "
+                    f"({cache_hits} cache hits)",
                     flush=True,
                 )
                 if files_completed == 1 or finished or now - transfer_last_update >= 2:
@@ -714,7 +743,11 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                         storage,
                         job_root,
                         job,
-                        stage="Downloading source images",
+                        stage=(
+                            "Loading cached source images"
+                            if cache_hits == files_completed
+                            else "Downloading source images"
+                        ),
                         progress=3,
                     )
 
@@ -1019,6 +1052,31 @@ def elapsed_since(started_at: str, completed_at: str | None = None) -> float:
 def validate_job_root(root: str, variable: str) -> None:
     if not root or ".." in root.split("/"):
         raise WorkerConfigurationError(f"{variable} is invalid")
+
+
+def source_cache_folder(source: str) -> Path | None:
+    """Return the persistent cache folder for a cloud source path, when mounted."""
+    configured = os.environ.get("OPENREEF_SOURCE_CACHE_DIR")
+    if configured is not None:
+        if not configured.strip():
+            return None
+        root = Path(configured).expanduser()
+    else:
+        volume = Path("/runpod-volume")
+        if not volume.is_dir():
+            return None
+        root = volume / "openreef-source-cache"
+    digest = hashlib.sha256(source.strip("/").encode()).hexdigest()[:16]
+    label = safe_dataset_name(Path(source.strip("/")).name or "source")
+    return root.resolve() / f"{label}-{digest}"
+
+
+def cache_file_matches(path: Path, expected_size: int) -> bool:
+    """Accept only complete regular cache files with the Drive-reported size."""
+    try:
+        return path.is_file() and (expected_size <= 0 or path.stat().st_size == expected_size)
+    except OSError:
+        return False
 
 
 def job_source_folder(job: dict[str, Any], job_root: str) -> str:

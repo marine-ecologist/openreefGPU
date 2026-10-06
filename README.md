@@ -15,6 +15,7 @@ Browser → Google Drive → Cloudflare API → RunPod GPU
 - Browser: <https://marine-ecologist.github.io/openreefGPU/>
 - API broker: <https://openreef-gpu-api.openreef-gpu.workers.dev/v1/health>
 - RunPod endpoint: `openreef-gpu` (`93jkogjuc9l6pu`)
+- RunPod source cache: `openreef-serverless-cache` (10 GB Standard, US-NE-1)
 - Storage root: the dedicated `reefplot` folder in Google Drive; existing survey images remain in
   `reefplot/images`, and cloud job state and outputs are written below `reefplot/jobs`.
 
@@ -30,7 +31,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.3-gpu.12`, based on OpenReef `0.6.3`. The suffix may advance for
+The current cloud release is `0.6.3-gpu.13`, based on OpenReef `0.6.3`. The suffix may advance for
 cloud-only changes (`gpu.2`, `gpu.3`) without pretending the desktop pipeline changed.
 
 ## Version contract
@@ -97,6 +98,11 @@ helper combines local MarkerTag time with sparse reconstruction to match the clo
 machine against a clean dataset workspace containing the same `images/` folder; the helper refuses
 existing `colmap/`, `openmvs/`, or `models/` outputs so cached work cannot distort the result.
 
+For repeated cloud benchmarks, attach a Runpod volume to the endpoint. The worker automatically
+uses `/runpod-volume/openreef-source-cache`: the first run fills it from Google Drive, and later runs
+stage matching source images from the persistent cache. The browser reports cache hits and staging
+time; compute-only benchmark totals continue to exclude source transfer and output upload.
+
 ## RunPod image
 
 Build from this repository root:
@@ -104,7 +110,7 @@ Build from this repository root:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.12 .
+  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.13 .
 ```
 
 The Dockerfile packages OpenReef `0.6.3` from its pinned commit, CUDA COLMAP, CUDA OpenMVS, and the
@@ -113,7 +119,7 @@ the required smoke test.
 
 After the repository is published on GitHub, run the **Publish RunPod worker image** workflow. It
 publishes the pinned Linux image to GitHub Container Registry as both
-`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.12` and `:latest`, ready for a RunPod Serverless template.
+`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.13` and `:latest`, ready for a RunPod Serverless template.
 
 The worker pins OpenMVS 2.4.0 plus its upstream Blackwell compatibility fix and CGAL 6.0.1,
 compiles CUDA targets
