@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 STAGE_LINE = re.compile(r"^\[(\d+)/(\d+)\] (.+)$")
+PIPELINE_STAGE_COUNT = 9
 CLOUD_STAGE_NAMES = (
     "Feature extraction",
     "Sequential matching",
@@ -96,6 +97,14 @@ def cloud_comparable(stage_seconds: dict[str, float]) -> dict[str, float]:
     return comparable
 
 
+def pipeline_stage(line: str) -> str | None:
+    """Return a top-level pipeline stage, ignoring nested task progress labels."""
+    match = STAGE_LINE.fullmatch(line)
+    if not match or int(match.group(2)) != PIPELINE_STAGE_COUNT:
+        return None
+    return match.group(3)
+
+
 def main() -> int:
     args = parser().parse_args()
     if args.cores < 1:
@@ -136,13 +145,13 @@ def main() -> int:
     try:
         for line in process.stdout:
             print(line, end="", flush=True)
-            match = STAGE_LINE.fullmatch(line.strip())
-            if not match:
+            stage_name = pipeline_stage(line.strip())
+            if stage_name is None:
                 continue
             now = time.monotonic()
             if active_name is not None:
                 stage_seconds[active_name] = round(now - active_started, 3)
-            active_name = match.group(3)
+            active_name = stage_name
             active_started = now
     except KeyboardInterrupt:
         process.terminate()
