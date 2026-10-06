@@ -93,7 +93,9 @@ python3 scripts/benchmark-local.py /path/to/dataset \
 ```
 
 Use the generated `openreef-benchmark-*.json` records for the M2, M5, and cloud comparison. The
-helper combines local MarkerTag time with sparse reconstruction to match the cloud timer.
+helper combines local MarkerTag time with sparse reconstruction to match the cloud timer. Run each
+machine against a clean dataset workspace containing the same `images/` folder; the helper refuses
+existing `colmap/`, `openmvs/`, or `models/` outputs so cached work cannot distort the result.
 
 ## RunPod image
 

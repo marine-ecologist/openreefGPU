@@ -109,6 +109,16 @@ def main() -> int:
     dataset = args.dataset.expanduser().resolve()
     if not (dataset / "images").is_dir():
         raise SystemExit(f"Dataset does not contain an images folder: {dataset}")
+    existing_outputs = [
+        path.name
+        for path in (dataset / "colmap", dataset / "openmvs", dataset / "models")
+        if path.exists()
+    ]
+    if existing_outputs:
+        raise SystemExit(
+            "A valid benchmark needs a clean dataset workspace containing only source images. "
+            f"Existing output folders found: {', '.join(existing_outputs)}"
+        )
 
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
