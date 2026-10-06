@@ -156,6 +156,51 @@ def test_google_drive_request_retries_transient_server_errors(
     assert calls == 2
 
 
+def test_google_drive_upload_resumes_after_transient_server_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Response(io.BytesIO):
+        headers: dict[str, str] = {}
+
+    source = tmp_path / "model.glb"
+    source.write_bytes(b"completed-model")
+    requests: list[urllib.request.Request] = []
+
+    def open_request(request: urllib.request.Request, **_kwargs: object) -> io.BytesIO:
+        requests.append(request)
+        if len(requests) == 1:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                502,
+                "Bad Gateway",
+                {},
+                io.BytesIO(b"temporary failure"),
+            )
+        if len(requests) == 2:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                308,
+                "Resume Incomplete",
+                {"Range": "bytes=0-3"},
+                io.BytesIO(),
+            )
+        return Response()
+
+    monkeypatch.setattr("worker.handler.urllib.request.urlopen", open_request)
+    monkeypatch.setattr("worker.handler.time.sleep", lambda _delay: None)
+
+    GoogleDriveClient._upload_stream(
+        "https://drive.example/upload", source, source.stat().st_size, "model/gltf-binary"
+    )
+
+    assert len(requests) == 3
+    assert requests[1].get_header("Content-range") == f"bytes */{source.stat().st_size}"
+    assert requests[2].get_header("Content-range") == (
+        f"bytes 4-{source.stat().st_size - 1}/{source.stat().st_size}"
+    )
+    assert requests[2].data == b"leted-model"
+
+
 def test_google_drive_source_cache_reuses_and_populates_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -201,10 +246,10 @@ def test_worker_rejects_a_mismatched_openreef_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.13")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.14")
     payload = {
         "openreef_version": "0.6.4",
-        "openreef_gpu_version": "0.6.3-gpu.13",
+        "openreef_gpu_version": "0.6.3-gpu.14",
     }
 
     with pytest.raises(ValueError, match="does not match"):
@@ -213,13 +258,13 @@ def test_worker_rejects_a_mismatched_openreef_version(
 
 def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.13")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.14")
     payload = {
         "openreef_version": "0.6.3",
-        "openreef_gpu_version": "0.6.3-gpu.13",
+        "openreef_gpu_version": "0.6.3-gpu.14",
     }
 
     assert validate_version_contract(payload, "0.6.3") == {
         "openreef": "0.6.3",
-        "openreefGPU": "0.6.3-gpu.13",
+        "openreefGPU": "0.6.3-gpu.14",
     }

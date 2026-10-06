@@ -42,6 +42,7 @@ TransferProgress = Callable[[int, int, int, int, str, int], None]
 TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 GOOGLE_DRIVE_DOWNLOAD_ATTEMPTS = 5
 GOOGLE_DRIVE_REQUEST_ATTEMPTS = 5
+GOOGLE_DRIVE_UPLOAD_ATTEMPTS = 5
 
 
 class WorkerConfigurationError(RuntimeError):
@@ -542,34 +543,114 @@ class GoogleDriveClient:
         return upload_url
 
     @staticmethod
-    def _upload_stream(upload_url: str, source: Path, size: int, content_type: str) -> None:
+    def _upload_offset(headers: Any, default: int = 0) -> int:
+        committed_range = headers.get("Range", "")
+        match = re.fullmatch(r"bytes=0-(\d+)", committed_range)
+        return int(match.group(1)) + 1 if match else default
+
+    @classmethod
+    def _query_upload_offset(cls, upload_url: str, size: int) -> int | None:
+        request = urllib.request.Request(
+            upload_url,
+            data=b"",
+            headers={
+                "Content-Length": "0",
+                "Content-Range": f"bytes */{size}",
+            },
+            method="PUT",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                return cls._upload_offset(response.headers, size)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 308:
+                return cls._upload_offset(exc.headers)
+            if exc.code in TRANSIENT_HTTP_STATUS_CODES:
+                return None
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(
+                f"Could not query Google Drive upload state ({exc.code}): {detail}"
+            ) from exc
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ):
+            return None
+
+    @classmethod
+    def _upload_stream(cls, upload_url: str, source: Path, size: int, content_type: str) -> None:
         # Google requires non-final chunks to be a multiple of 256 KiB.
         chunk_size = 10 * 1024 * 1024
         with source.open("rb") as stream:
             start = 0
             while start < size:
-                chunk = stream.read(chunk_size)
+                stream.seek(start)
+                chunk = stream.read(min(chunk_size, size - start))
                 end = start + len(chunk) - 1
-                request = urllib.request.Request(
-                    upload_url,
-                    data=chunk,
-                    headers={
-                        "Content-Length": str(len(chunk)),
-                        "Content-Range": f"bytes {start}-{end}/{size}",
-                        "Content-Type": content_type,
-                    },
-                    method="PUT",
-                )
-                try:
-                    with urllib.request.urlopen(request, timeout=900):
-                        pass
-                except urllib.error.HTTPError as exc:
-                    if exc.code != 308:
-                        detail = exc.read().decode("utf-8", errors="replace")[:500]
+                for attempt in range(1, GOOGLE_DRIVE_UPLOAD_ATTEMPTS + 1):
+                    request = urllib.request.Request(
+                        upload_url,
+                        data=chunk,
+                        headers={
+                            "Content-Length": str(len(chunk)),
+                            "Content-Range": f"bytes {start}-{end}/{size}",
+                            "Content-Type": content_type,
+                        },
+                        method="PUT",
+                    )
+                    try:
+                        with urllib.request.urlopen(request, timeout=900):
+                            pass
+                        start = end + 1
+                        break
+                    except urllib.error.HTTPError as exc:
+                        if exc.code == 308:
+                            start = cls._upload_offset(exc.headers, end + 1)
+                            break
+                        if exc.code not in TRANSIENT_HTTP_STATUS_CODES:
+                            detail = exc.read().decode("utf-8", errors="replace")[:500]
+                            raise RuntimeError(
+                                f"Google Drive upload failed at byte {start} ({exc.code}): {detail}"
+                            ) from exc
+                        last_error: BaseException = exc
+                        reason = f"HTTP {exc.code}"
+                    except (
+                        urllib.error.URLError,
+                        TimeoutError,
+                        ConnectionError,
+                        http.client.IncompleteRead,
+                    ) as exc:
+                        last_error = exc
+                        reason = str(exc)
+
+                    recovered_offset = cls._query_upload_offset(upload_url, size)
+                    if recovered_offset == size:
+                        return
+                    if recovered_offset is not None and recovered_offset > start:
+                        print(
+                            f"Google Drive upload recovered at byte {recovered_offset} ",
+                            f"after {reason}",
+                            flush=True,
+                        )
+                        start = recovered_offset
+                        break
+                    if attempt == GOOGLE_DRIVE_UPLOAD_ATTEMPTS:
                         raise RuntimeError(
-                            f"Google Drive upload failed at byte {start} ({exc.code}): {detail}"
-                        ) from exc
-                start = end + 1
+                            f"Google Drive upload failed at byte {start} after "
+                            f"{GOOGLE_DRIVE_UPLOAD_ATTEMPTS} attempts: {reason}"
+                        ) from last_error
+                    delay = min(2 ** (attempt - 1), 16)
+                    print(
+                        f"Google Drive upload retry {attempt}/"
+                        f"{GOOGLE_DRIVE_UPLOAD_ATTEMPTS - 1} at byte {start} "
+                        f"after {reason}; waiting {delay}s",
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise RuntimeError(f"Google Drive upload stalled at byte {start}")
 
     def _resolve_folder(self, path: str) -> str:
         parent_id = self.root_folder_id
