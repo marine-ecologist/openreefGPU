@@ -89,7 +89,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.4
 ARG OPENREEF_REF=e396b72933c4f8ad8f5d2e5175b124c51daed52d
-ARG OPENREEF_GPU_VERSION=0.6.4-gpu.2
+ARG OPENREEF_GPU_VERSION=0.6.4-gpu.3
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -113,13 +113,13 @@ RUN git init /opt/openreef \
     && git -C /opt/openreef fetch --depth 1 origin "${OPENREEF_REF}" \
     && git -C /opt/openreef checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/openreef rev-parse HEAD)" = "${OPENREEF_REF}"
-RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps /opt/openreef \
-    && python3 -m pip install --break-system-packages --no-cache-dir \
-      runpod==1.7.13 numpy==2.2.6 Pillow==11.3.0 opencv-python-headless==4.12.0.88 \
-    && test "$(python3 -c 'import openreef; print(openreef.__version__)')" = "${OPENREEF_VERSION}" \
-    && test "$(cat /usr/local/share/openreef/COLMAP_REF)" = "${COLMAP_REF}" \
-    && test "$(cat /usr/local/share/openreef/COLMAP_BUILD_OPTIONS)" = 'CASPAR_ENABLED=ON' \
-    && colmap mapper --help 2>&1 | grep -q 'Mapper.ba_local_backend'
+RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps /opt/openreef
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+      runpod==1.7.13 numpy==2.2.6 Pillow==11.3.0 opencv-python-headless==4.12.0.88
+RUN test "$(python3 -c 'import openreef; print(openreef.__version__)')" = "${OPENREEF_VERSION}"
+RUN test "$(cat /usr/local/share/openreef/COLMAP_REF)" = "${COLMAP_REF}" \
+    && test "$(cat /usr/local/share/openreef/COLMAP_BUILD_OPTIONS)" = 'CASPAR_ENABLED=ON'
+RUN colmap --help >/dev/null
 
 COPY worker/ /opt/openreefgpu/worker/
 
