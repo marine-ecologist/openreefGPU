@@ -8,11 +8,11 @@ ARG COLMAP_VERSION=main-2026-10-07
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 ARG COLMAP_CUDA_ARCHITECTURES=75;80;86;89;90;100;103;120
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates cmake git ninja-build \
+    build-essential ca-certificates cmake git ninja-build libblas-dev liblapack-dev \
     libboost-program-options-dev libboost-graph-dev libboost-system-dev \
     libcgal-dev libceres-dev libcurl4-openssl-dev libeigen3-dev libglew-dev \
     libgoogle-glog-dev libgmock-dev libgtest-dev libmetis-dev libmkl-full-dev \
-    libopenimageio-dev libssl-dev libsqlite3-dev \
+    libopenimageio-dev openimageio-tools libssl-dev libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /usr/include/opencv4
 RUN git init /opt/colmap \
@@ -24,7 +24,6 @@ RUN git init /opt/colmap \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_CUDA_ARCHITECTURES="${COLMAP_CUDA_ARCHITECTURES}" \
       -DCMAKE_INSTALL_PREFIX=/opt/colmap-install \
-      -DBLA_VENDOR=Intel10_64lp \
       -DCASPAR_ENABLED=ON -DCASPAR_USE_DOUBLE=OFF \
       -DGUI_ENABLED=OFF -DTESTS_ENABLED=OFF -DONNX_ENABLED=OFF \
     && grep -q '^CASPAR_ENABLED:BOOL=ON$' /opt/colmap/build/CMakeCache.txt \
@@ -90,7 +89,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.4
 ARG OPENREEF_REF=e396b72933c4f8ad8f5d2e5175b124c51daed52d
-ARG OPENREEF_GPU_VERSION=0.6.4-gpu.1
+ARG OPENREEF_GPU_VERSION=0.6.4-gpu.2
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
