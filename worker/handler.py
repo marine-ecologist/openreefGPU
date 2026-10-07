@@ -957,28 +957,14 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
+    command = pipeline_command(dataset)
     cores = pipeline_core_count()
-    command = [
-        "openreef-pipeline",
-        str(dataset),
-        "--dense-compact",
-        "--no-dense-original",
-        "--max-image-size",
-        os.environ.get("OPENREEF_MAX_IMAGE_SIZE", "3200"),
-        "--max-resolution",
-        os.environ.get("OPENREEF_MAX_RESOLUTION", "2560"),
-        "--max-texture-size",
-        os.environ.get("OPENREEF_MAX_TEXTURE_SIZE", "4096"),
-        "--texture-resolution-level",
-        os.environ.get("OPENREEF_TEXTURE_RESOLUTION_LEVEL", "0"),
-        "--texture-sharpness",
-        os.environ.get("OPENREEF_TEXTURE_SHARPNESS", "0"),
-        "--no-global-seam-leveling",
-        "--no-local-seam-leveling",
-        "--cores",
-        str(cores),
-    ]
-    print(f"Starting OpenReef compact pipeline with {cores} CPU threads", flush=True)
+    backend = os.environ.get("OPENREEF_BA_BACKEND", "caspar").strip().lower()
+    print(
+        f"Starting OpenReef compact pipeline with {cores} CPU threads "
+        f"and {backend.upper()} bundle adjustment",
+        flush=True,
+    )
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -1000,6 +986,52 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
             "; native reconstruction tool likely aborted with SIGABRT" if return_code == 250 else ""
         )
         raise RuntimeError(f"OpenReef pipeline exited with code {return_code}{detail}")
+
+
+def pipeline_command(dataset: Path) -> list[str]:
+    """Build the cloud pipeline command, including its bundle-adjustment mode."""
+    cores = pipeline_core_count()
+    backend = os.environ.get("OPENREEF_BA_BACKEND", "caspar").strip().lower()
+    if backend not in {"ceres", "caspar"}:
+        raise WorkerConfigurationError(
+            "OPENREEF_BA_BACKEND must be either 'ceres' or 'caspar'"
+        )
+    ceres_gpu_value = os.environ.get("OPENREEF_CERES_USE_GPU", "0").strip().lower()
+    if ceres_gpu_value not in {"0", "1", "false", "true", "no", "yes"}:
+        raise WorkerConfigurationError(
+            "OPENREEF_CERES_USE_GPU must be true/false or 1/0"
+        )
+    ceres_gpu = ceres_gpu_value in {"1", "true", "yes"}
+    gpu_index = os.environ.get("OPENREEF_BA_GPU_INDEX", "-1").strip()
+    try:
+        int(gpu_index)
+    except ValueError as exc:
+        raise WorkerConfigurationError("OPENREEF_BA_GPU_INDEX must be an integer") from exc
+    return [
+        "openreef-pipeline",
+        str(dataset),
+        "--dense-compact",
+        "--no-dense-original",
+        "--max-image-size",
+        os.environ.get("OPENREEF_MAX_IMAGE_SIZE", "3200"),
+        "--max-resolution",
+        os.environ.get("OPENREEF_MAX_RESOLUTION", "2560"),
+        "--max-texture-size",
+        os.environ.get("OPENREEF_MAX_TEXTURE_SIZE", "4096"),
+        "--texture-resolution-level",
+        os.environ.get("OPENREEF_TEXTURE_RESOLUTION_LEVEL", "0"),
+        "--texture-sharpness",
+        os.environ.get("OPENREEF_TEXTURE_SHARPNESS", "0"),
+        "--no-global-seam-leveling",
+        "--no-local-seam-leveling",
+        "--cores",
+        str(cores),
+        "--bundle-adjustment-backend",
+        backend,
+        "--ceres-gpu" if ceres_gpu else "--no-ceres-gpu",
+        "--bundle-adjustment-gpu-index",
+        gpu_index,
+    ]
 
 
 def pipeline_core_count() -> int:

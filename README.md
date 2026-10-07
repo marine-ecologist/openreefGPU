@@ -31,7 +31,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.3-gpu.15`, based on OpenReef `0.6.3`. The suffix may advance for
+The current cloud release is `0.6.4-gpu.1`, based on OpenReef `0.6.4`. The suffix may advance for
 cloud-only changes (`gpu.2`, `gpu.3`) without pretending the desktop pipeline changed.
 
 ## Version contract
@@ -40,6 +40,7 @@ cloud-only changes (`gpu.2`, `gpu.3`) without pretending the desktop pipeline ch
 
 - the openreefGPU version;
 - the compatible OpenReef release, tag, and immutable commit;
+- the pinned COLMAP commit and required Caspar build contract;
 - the pinned OpenMVS release and Blackwell-compatible commit;
 - the pinned CGAL release and commit required by that OpenMVS build;
 - the job and result schema versions.
@@ -111,24 +112,32 @@ Build from this repository root:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.15 .
+  -t YOUR_REGISTRY/openreef-gpu:0.6.4-gpu.1 .
 ```
 
-The Dockerfile packages OpenReef `0.6.3` from its pinned commit, CUDA COLMAP, CUDA OpenMVS, and the
-small openreefGPU job adapter. See [CLOUD_DEPLOYMENT.md](CLOUD_DEPLOYMENT.md) for complete setup and
-the required smoke test.
+The Dockerfile packages OpenReef `0.6.4` from its pinned commit, a pinned COLMAP build compiled with
+the experimental Caspar GPU bundle-adjustment backend, CUDA OpenMVS, and the small openreefGPU job
+adapter. See [CLOUD_DEPLOYMENT.md](CLOUD_DEPLOYMENT.md) for complete setup and the required smoke
+test.
 
 After the repository is published on GitHub, run the **Publish RunPod worker image** workflow. It
 publishes the pinned Linux image to GitHub Container Registry as both
-`ghcr.io/<owner>/openreef-gpu:0.6.3-gpu.15` and `:latest`, ready for a RunPod Serverless template.
+`ghcr.io/<owner>/openreef-gpu:0.6.4-gpu.1` and `:latest`, ready for a RunPod Serverless template.
 
-The worker pins OpenMVS 2.4.0 plus its upstream Blackwell compatibility fix and CGAL 6.0.1,
-compiles CUDA targets
-for Turing through Blackwell (`sm_75`, `sm_86`, `sm_89`, and `sm_120`), and caps native pipeline
+The worker pins COLMAP commit `68b722b` (including the 2026-10-07 Caspar kernel fixes), OpenMVS
+2.4.0 plus its upstream Blackwell compatibility fix, and CGAL 6.0.1. COLMAP compiles Caspar for
+Turing through Blackwell (`sm_75`, `sm_80`, `sm_86`, `sm_89`, `sm_90`, `sm_100`, `sm_103`, and
+`sm_120`), and the worker caps native pipeline
 tools at 32 CPU threads by default. Override the ceiling with `OPENREEF_MAX_CORES` only after
 testing the selected worker hardware. The image disables OpenMVS's optional JPEG-XL path because
 the pinned Ubuntu OpenCV does not expose its JPEG-XL write flag; JPG, PNG, TIFF, and WebP survey
 inputs remain supported.
+
+Caspar is the cloud default through `OPENREEF_BA_BACKEND=caspar`. For controlled mapper-only
+comparisons, set `OPENREEF_BA_BACKEND=ceres` with `OPENREEF_CERES_USE_GPU=0` for the established CPU
+baseline, or `OPENREEF_CERES_USE_GPU=1` for Ceres CUDA when using a COLMAP image linked to a
+CUDA/cuDSS-enabled Ceres build. See [CASPAR_BENCHMARK.md](CASPAR_BENCHMARK.md) for the fixed A/B/C
+protocol and limitations.
 
 During each job, the browser status card reports the source transfer from Drive or SharePoint to
 the worker: images completed, bytes copied, elapsed time, and average throughput. The final values

@@ -34,6 +34,14 @@ assert(
   'The pinned OpenReef commit must be a full 40-character SHA',
 );
 assert(
+  /^[0-9a-f]{40}$/.test(versions.colmap.commit),
+  'The pinned COLMAP commit must be a full 40-character SHA',
+);
+assert(
+  versions.colmap.casparEnabled === true,
+  'The pinned COLMAP build must declare Caspar enabled',
+);
+assert(
   /^[0-9a-f]{40}$/.test(versions.openMVS.commit),
   'The pinned OpenMVS commit must be a full 40-character SHA',
 );
@@ -48,6 +56,8 @@ assert(
 assertDockerArg('OPENREEF_VERSION', versions.openreef.version);
 assertDockerArg('OPENREEF_REF', versions.openreef.commit);
 assertDockerArg('OPENREEF_GPU_VERSION', versions.openreefGPU.version);
+assertDockerArg('COLMAP_VERSION', versions.colmap.version);
+assertDockerArg('COLMAP_REF', versions.colmap.commit);
 assertDockerArg('OPENMVS_VERSION', versions.openMVS.version);
 assertDockerArg('OPENMVS_REF', versions.openMVS.commit);
 assertDockerArg('CGAL_VERSION', versions.cgal.version);

@@ -125,7 +125,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.3-gpu.15
+ghcr.io/<github-owner>/openreef-gpu:0.6.4-gpu.1
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -138,12 +138,12 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.15 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.3-gpu.15
+  -t YOUR_REGISTRY/openreef-gpu:0.6.4-gpu.1 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.4-gpu.1
 ```
 
-The image starts from CUDA-enabled COLMAP and builds OpenMVS with CUDA enabled. It is large, so a
-container-registry CI builder is usually more practical than a laptop build.
+The image builds pinned COLMAP with `CASPAR_ENABLED=ON` and builds OpenMVS with CUDA enabled. It is
+large, so a container-registry CI builder is usually more practical than a laptop build.
 
 Create a **queue-based** Runpod Serverless endpoint from that image with:
 
@@ -165,8 +165,11 @@ GOOGLE_CLIENT_SECRET
 GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
-OPENREEF_VERSION=0.6.3
-OPENREEF_GPU_VERSION=0.6.3-gpu.15
+OPENREEF_VERSION=0.6.4
+OPENREEF_GPU_VERSION=0.6.4-gpu.1
+OPENREEF_BA_BACKEND=caspar
+OPENREEF_CERES_USE_GPU=0
+OPENREEF_BA_GPU_INDEX=-1
 ```
 
 Optional compact-profile tuning variables are `OPENREEF_MAX_IMAGE_SIZE`,
@@ -176,6 +179,9 @@ uses full-resolution texture input with OpenMVS seam leveling and sharpening dis
 OpenMVS 2.4 seam solver produced clipped black/red texture patches on the reef survey validation
 set. `OPENREEF_MAX_CORES` defaults to `32` to avoid passing very
 large cloud-host CPU counts into COLMAP and OpenMVS.
+`OPENREEF_BA_BACKEND` accepts `caspar` or `ceres`; Caspar is the 0.6.4 cloud default. The Ceres
+GPU switch is retained for controlled builds linked to CUDA/cuDSS-enabled Ceres and is not needed
+by Caspar.
 `OPENREEF_SOURCE_DOWNLOAD_WORKERS` controls concurrent Google Drive downloads (default `8`,
 maximum `16`) and only changes transfer time, not reconstruction output.
 

@@ -1,6 +1,40 @@
 # syntax=docker/dockerfile:1.7
 # openreefGPU owns the cloud adapter. The reconstruction pipeline itself is
 # installed from one immutable OpenReef desktop commit declared in versions.json.
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04 AS colmap-caspar-builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG COLMAP_VERSION=main-2026-10-07
+ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
+ARG COLMAP_CUDA_ARCHITECTURES=75;80;86;89;90;100;103;120
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates cmake git ninja-build \
+    libboost-program-options-dev libboost-graph-dev libboost-system-dev \
+    libcgal-dev libceres-dev libcurl4-openssl-dev libeigen3-dev libglew-dev \
+    libgoogle-glog-dev libgmock-dev libgtest-dev libmetis-dev libmkl-full-dev \
+    libopenimageio-dev libssl-dev libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/include/opencv4
+RUN git init /opt/colmap \
+    && git -C /opt/colmap remote add origin https://github.com/colmap/colmap.git \
+    && git -C /opt/colmap fetch --depth 1 origin "${COLMAP_REF}" \
+    && git -C /opt/colmap checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/colmap rev-parse HEAD)" = "${COLMAP_REF}" \
+    && cmake -S /opt/colmap -B /opt/colmap/build -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES="${COLMAP_CUDA_ARCHITECTURES}" \
+      -DCMAKE_INSTALL_PREFIX=/opt/colmap-install \
+      -DBLA_VENDOR=Intel10_64lp \
+      -DCASPAR_ENABLED=ON -DCASPAR_USE_DOUBLE=OFF \
+      -DGUI_ENABLED=OFF -DTESTS_ENABLED=OFF -DONNX_ENABLED=OFF \
+    && grep -q '^CASPAR_ENABLED:BOOL=ON$' /opt/colmap/build/CMakeCache.txt \
+    && cmake --build /opt/colmap/build --parallel 2 \
+    && cmake --install /opt/colmap/build \
+    && mkdir -p /opt/colmap-install/share/openreef \
+    && printf '%s\n' "${COLMAP_VERSION}" > /opt/colmap-install/share/openreef/COLMAP_VERSION \
+    && printf '%s\n' "${COLMAP_REF}" > /opt/colmap-install/share/openreef/COLMAP_REF \
+    && printf '%s\n' 'CASPAR_ENABLED=ON' > /opt/colmap-install/share/openreef/COLMAP_BUILD_OPTIONS
+
 FROM nvidia/cuda:12.9.1-devel-ubuntu24.04 AS openmvs-builder
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -54,9 +88,10 @@ RUN git init /opt/vcglib \
 FROM colmap/colmap:20260907.8077
 ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
-ARG OPENREEF_VERSION=0.6.3
-ARG OPENREEF_REF=c5da966804860b500a4f5657c783d9df9de9cbfc
-ARG OPENREEF_GPU_VERSION=0.6.3-gpu.15
+ARG OPENREEF_VERSION=0.6.4
+ARG OPENREEF_REF=e396b72933c4f8ad8f5d2e5175b124c51daed52d
+ARG OPENREEF_GPU_VERSION=0.6.4-gpu.1
+ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
@@ -64,6 +99,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libceres-dev libglfw3 libopencv-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=openmvs-builder /usr/local/ /usr/local/
+COPY --from=colmap-caspar-builder /opt/colmap-install/ /usr/local/
 COPY --from=openmvs-builder \
     /opt/openMVS/build/bin/InterfaceCOLMAP \
     /opt/openMVS/build/bin/DensifyPointCloud \
@@ -81,7 +117,10 @@ RUN git init /opt/openreef \
 RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps /opt/openreef \
     && python3 -m pip install --break-system-packages --no-cache-dir \
       runpod==1.7.13 numpy==2.2.6 Pillow==11.3.0 opencv-python-headless==4.12.0.88 \
-    && test "$(python3 -c 'import openreef; print(openreef.__version__)')" = "${OPENREEF_VERSION}"
+    && test "$(python3 -c 'import openreef; print(openreef.__version__)')" = "${OPENREEF_VERSION}" \
+    && test "$(cat /usr/local/share/openreef/COLMAP_REF)" = "${COLMAP_REF}" \
+    && test "$(cat /usr/local/share/openreef/COLMAP_BUILD_OPTIONS)" = 'CASPAR_ENABLED=ON' \
+    && colmap mapper --help 2>&1 | grep -q 'Mapper.ba_local_backend'
 
 COPY worker/ /opt/openreefgpu/worker/
 
@@ -95,6 +134,9 @@ ENV PYTHONUNBUFFERED=1 \
     OPENREEF_TEXTURE_RESOLUTION_LEVEL=0 \
     OPENREEF_TEXTURE_SHARPNESS=0 \
     OPENREEF_MAX_CORES=32 \
+    OPENREEF_BA_BACKEND=caspar \
+    OPENREEF_CERES_USE_GPU=0 \
+    OPENREEF_BA_GPU_INDEX=-1 \
     GOOGLE_DRIVE_JOB_ROOT=jobs
 
 WORKDIR /opt/openreefgpu

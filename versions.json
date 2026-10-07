@@ -1,13 +1,19 @@
 {
   "schemaVersion": 1,
   "openreefGPU": {
-    "version": "0.6.3-gpu.15"
+    "version": "0.6.4-gpu.1"
   },
   "openreef": {
-    "version": "0.6.3",
+    "version": "0.6.4",
     "repository": "https://github.com/marine-ecologist/openreef.git",
-    "ref": "v0.6.3",
-    "commit": "c5da966804860b500a4f5657c783d9df9de9cbfc"
+    "ref": "v0.6.4",
+    "commit": "e396b72933c4f8ad8f5d2e5175b124c51daed52d"
+  },
+  "colmap": {
+    "version": "main-2026-10-07",
+    "repository": "https://github.com/colmap/colmap.git",
+    "commit": "68b722be23fdba964a24583720bde07675171d47",
+    "casparEnabled": true
   },
   "openMVS": {
     "version": "2.4.0",

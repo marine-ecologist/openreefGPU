@@ -9,6 +9,7 @@ from worker.handler import (
     create_storage_client,
     google_query_value,
     job_source_folder,
+    pipeline_command,
     pipeline_core_count,
     result_file_name,
     safe_dataset_name,
@@ -42,6 +43,34 @@ def test_pipeline_thread_cap_rejects_invalid_configuration(
 
     with pytest.raises(RuntimeError, match="must be an integer"):
         pipeline_core_count()
+
+
+def test_cloud_pipeline_uses_caspar_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OPENREEF_BA_BACKEND", raising=False)
+    monkeypatch.delenv("OPENREEF_CERES_USE_GPU", raising=False)
+    monkeypatch.delenv("OPENREEF_BA_GPU_INDEX", raising=False)
+
+    command = pipeline_command(tmp_path)
+
+    assert command[command.index("--bundle-adjustment-backend") + 1] == "caspar"
+    assert "--no-ceres-gpu" in command
+    assert command[command.index("--bundle-adjustment-gpu-index") + 1] == "-1"
+
+
+def test_cloud_pipeline_can_select_ceres_cuda(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OPENREEF_BA_BACKEND", "ceres")
+    monkeypatch.setenv("OPENREEF_CERES_USE_GPU", "true")
+    monkeypatch.setenv("OPENREEF_BA_GPU_INDEX", "2")
+
+    command = pipeline_command(tmp_path)
+
+    assert command[command.index("--bundle-adjustment-backend") + 1] == "ceres"
+    assert "--ceres-gpu" in command
+    assert command[command.index("--bundle-adjustment-gpu-index") + 1] == "2"
 
 
 def test_result_selection_prefers_compact_textured_glb(tmp_path: Path) -> None:
@@ -245,26 +274,26 @@ def test_google_drive_source_cache_reuses_and_populates_files(
 def test_worker_rejects_a_mismatched_openreef_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.15")
+    monkeypatch.setenv("OPENREEF_VERSION", "0.6.4")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.4-gpu.1")
     payload = {
-        "openreef_version": "0.6.4",
-        "openreef_gpu_version": "0.6.3-gpu.15",
+        "openreef_version": "0.6.5",
+        "openreef_gpu_version": "0.6.4-gpu.1",
     }
 
     with pytest.raises(ValueError, match="does not match"):
-        validate_version_contract(payload, "0.6.3")
+        validate_version_contract(payload, "0.6.4")
 
 
 def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENREEF_VERSION", "0.6.3")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.3-gpu.15")
+    monkeypatch.setenv("OPENREEF_VERSION", "0.6.4")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.4-gpu.1")
     payload = {
-        "openreef_version": "0.6.3",
-        "openreef_gpu_version": "0.6.3-gpu.15",
+        "openreef_version": "0.6.4",
+        "openreef_gpu_version": "0.6.4-gpu.1",
     }
 
-    assert validate_version_contract(payload, "0.6.3") == {
-        "openreef": "0.6.3",
-        "openreefGPU": "0.6.3-gpu.15",
+    assert validate_version_contract(payload, "0.6.4") == {
+        "openreef": "0.6.4",
+        "openreefGPU": "0.6.4-gpu.1",
     }
