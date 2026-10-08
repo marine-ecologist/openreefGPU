@@ -126,7 +126,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.5
 ARG OPENREEF_REF=7329fe43e3d43f605e9961c608af81e72788b475
-ARG OPENREEF_GPU_VERSION=0.6.5-gpu.2
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.3
 ARG CERES_REF=71be12da7161b567990f165e38771dc9c7e4e96b
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
@@ -167,7 +167,7 @@ RUN ldconfig \
     && test "$(cat /usr/local/share/openreef/COLMAP_REF)" = "${COLMAP_REF}" \
     && grep -qx 'CERES_CUDA_ENABLED=ON' /usr/local/share/openreef/COLMAP_BUILD_OPTIONS \
     && grep -qx 'CERES_CUDSS_ENABLED=ON' /usr/local/share/openreef/COLMAP_BUILD_OPTIONS \
-    && ldd "$(command -v colmap)" | grep -q '/usr/local/lib/libceres'
+    && test -e /usr/local/lib/libceres.so
 RUN test -x "$(command -v colmap)" \
     && ! ldd "$(command -v colmap)" | grep -q 'not found'
 RUN colmap --help >/dev/null

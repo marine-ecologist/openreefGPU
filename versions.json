@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "openreefGPU": {
-    "version": "0.6.5-gpu.2"
+    "version": "0.6.5-gpu.3"
   },
   "openreef": {
     "version": "0.6.5",
