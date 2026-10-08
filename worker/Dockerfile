@@ -126,7 +126,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.5
 ARG OPENREEF_REF=7329fe43e3d43f605e9961c608af81e72788b475
-ARG OPENREEF_GPU_VERSION=0.6.5-gpu.3
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.4
 ARG CERES_REF=71be12da7161b567990f165e38771dc9c7e4e96b
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
@@ -137,7 +137,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-serialization-dev libboost-system-dev libcgal-dev libcudss0-cuda-12 \
     libcurl4-openssl-dev libeigen3-dev libglew-dev libglfw3 \
     libgoogle-glog-dev libmetis-dev libmkl-full-dev libopencv-dev \
-    libopenimageio-dev openimageio-tools libssl-dev libsqlite3-dev \
+    libopenimageio-dev openimageio-tools libsuitesparse-dev libssl-dev libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=openmvs-builder /usr/local/ /usr/local/
 COPY --from=colmap-ceres-cuda-builder /opt/ceres-install/ /usr/local/
@@ -169,6 +169,7 @@ RUN ldconfig \
     && grep -qx 'CERES_CUDSS_ENABLED=ON' /usr/local/share/openreef/COLMAP_BUILD_OPTIONS \
     && test -e /usr/local/lib/libceres.so
 RUN test -x "$(command -v colmap)" \
+    && ldd "$(command -v colmap)" \
     && ! ldd "$(command -v colmap)" | grep -q 'not found'
 RUN colmap --help >/dev/null
 
