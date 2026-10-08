@@ -1,5 +1,96 @@
 # OpenReef compute benchmarks
 
+## OpenReef 0.6.4 Caspar cloud matrix
+
+Run date: 8 October 2026. These runs used the same 248-image Reefplot source
+set and compact reconstruction profile as the 0.6.3 matrix below. Every exact
+run used immutable image `ghcr.io/marine-ecologist/openreef-gpu:0.6.4-gpu.4`,
+one worker, one GPU, and a RunPod endpoint restricted to the named accelerator
+subtype. The image was built with `CASPAR_ENABLED=ON`, and OpenReef selected the
+Caspar bundle-adjustment backend for sparse reconstruction.
+
+The comparable total is the same eight-stage compute measure used for 0.6.3.
+It excludes queue time, Google Drive source staging, the cloud-only source
+preparation step, and result upload. M2 and M5 results are deliberately excluded
+from this cloud-GPU ranking because the macOS pipeline does not use CUDA/Caspar.
+
+### Ranked compute-only result
+
+| Rank | Accelerator | Job | Compute | Change vs 0.6.3 | RunPod rate | Compute-only cost |
+| ---: | --- | --- | ---: | ---: | ---: | ---: |
+| 1 | B200 180 GB Pro | [`0f687069`](https://marine-ecologist.github.io/openreefGPU/?job=0f687069-9540-4459-89e6-e5a0860c8f83) | **378 s** | 5.9% slower | $8.64/hr | $0.91 |
+| 2 | RTX PRO 6000 96 GB | [`dc3fe7b8`](https://marine-ecologist.github.io/openreefGPU/?job=dc3fe7b8-dcc4-4976-8a9e-8fde1fb91062) | **419 s** | 22.2% slower | $3.49/hr | $0.41 |
+| 3 | L40S 48 GB Pro | [`5fc09712`](https://marine-ecologist.github.io/openreefGPU/?job=5fc09712-7b80-4c72-a067-7d9366591de3) | **433 s** | **34.2% faster** | $1.75/hr | $0.21 |
+| 4 | H200 SXM 141 GB | [`fd9fdba8`](https://marine-ecologist.github.io/openreefGPU/?job=fd9fdba8-031b-413e-9b4a-dad5e686add2) | **452 s** | **6.4% faster** | $5.93/hr | $0.74 |
+| 5 | RTX 5090 32 GB Pro | [`7ce29e69`](https://marine-ecologist.github.io/openreefGPU/?job=7ce29e69-f2bd-4684-a918-82e4e7219e0b) | **471 s** | 5.4% slower | $1.58/hr | $0.21 |
+| 6 | L4 24 GB | [`5736a507`](https://marine-ecologist.github.io/openreefGPU/?job=5736a507-27d7-4510-ac3b-9a1536985a64) | **546 s** | **15.7% faster** | $0.69/hr | **$0.10** |
+| 7 | H100 SXM 80 GB Pro | [`931932a7`](https://marine-ecologist.github.io/openreefGPU/?job=931932a7-aad6-42ce-bb37-8813d00f0152) | **572 s** | 19.9% slower | $4.79/hr | $0.76 |
+| 8 | A40 48 GB | [`335d0fe1`](https://marine-ecologist.github.io/openreefGPU/?job=335d0fe1-9395-4d17-8442-48b8500004a8) | **629 s** | 9.0% slower | $1.22/hr | $0.21 |
+| 9 | B300 288 GB Pro | [`126c4028`](https://marine-ecologist.github.io/openreefGPU/?job=126c4028-c9f0-4285-8c74-5266775154b3) | **718 s** | 34.7% slower | $10.65/hr | $2.12 |
+| — | RTX 4090 24 GB Pro | [`48bd21c4`](https://marine-ecologist.github.io/openreefGPU/?job=48bd21c4-5a4f-4cc7-84c7-d0de24f14c50) | failed | n/a | $1.10/hr | n/a |
+
+B200 was fastest at 378 seconds. L4 was cheapest for compute at about $0.10,
+while L40S provided the strongest practical speed/cost balance: 433 seconds for
+about $0.21 of compute. Only L40S, L4, and H200 improved on their 0.6.3 totals.
+
+### Stage breakdown
+
+| Accelerator | Feature | Match | Sparse | Undistort | Import | Dense | Surface | Texture | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| B200 180 GB Pro | 10 | 17 | 232 | 2 | 3 | 93 | 2 | 19 | **378** |
+| RTX PRO 6000 96 GB | 11 | 17 | 246 | 2 | 2 | 117 | 2 | 22 | **419** |
+| L40S 48 GB Pro | 17 | 23 | 249 | 3 | 2 | 117 | 2 | 20 | **433** |
+| H200 SXM 141 GB | 15 | 23 | 258 | 2 | 1 | 127 | 2 | 24 | **452** |
+| RTX 5090 32 GB Pro | 15 | 23 | 279 | 5 | 3 | 122 | 3 | 21 | **471** |
+| L4 24 GB | 19 | 28 | 314 | 3 | 3 | 151 | 3 | 25 | **546** |
+| H100 SXM 80 GB Pro | 22 | 33 | 322 | 3 | 2 | 159 | 3 | 28 | **572** |
+| A40 48 GB | 18 | 34 | 369 | 3 | 2 | 165 | 2 | 36 | **629** |
+| B300 288 GB Pro | 18 | 23 | 499 | 3 | 2 | 145 | 3 | 25 | **718** |
+
+All values are seconds. The successful jobs reported OpenReef `0.6.4` and
+openreefGPU `0.6.4-gpu.4` and produced viewer-ready GLBs. Recorded GLB sizes
+ranged from 56,877,732 bytes (RTX 5090) to 60,317,896 bytes (L4).
+
+### Transfer and cost record
+
+| Accelerator | Queue | Drive staging | Upload | Estimated billed worker time | Estimated job cost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| B200 | 214.9 s | 81 s | 15 s | 476 s | $1.14 |
+| RTX PRO 6000 | 223.1 s | 21 s | 9 s | 451 s | $0.44 |
+| L40S | 10.9 s | 45 s | 20 s | 500 s | $0.24 |
+| H200 | 228.8 s | 24 s | 10 s | 488 s | $0.80 |
+| RTX 5090 | 196.7 s | 743 s | 19 s | 1,236 s | $0.54 |
+| L4 | 165.2 s | 761 s | 17 s | 1,328 s | $0.25 |
+| H100 | 148.6 s | 714 s | 17 s | 1,306 s | $1.74 |
+| A40 | 242.2 s | 34 s | 16 s | 681 s | $0.23 |
+| B300 | 158.7 s | 33 s | 12 s | 766 s | $2.27 |
+| **Bottom line** | queue excluded | transfer recorded separately | — | **7,232 s** | **$7.66 estimated** |
+
+The nine successful exact runs used approximately **$5.68 of compute-only
+time**. Estimated worker cost includes source staging, source preparation,
+compute, and result upload, but excludes queue time and browser-side job
+preparation. Across the full exercise—including two provisional runs, the first
+RTX 5090 failure, the RTX 4090 failure, and platform overhead—the RunPod balance
+moved from $21.13 to $11.84: an observed decrease of **$9.29**, within the
+authorised $20 budget.
+
+### Interpretation and failures
+
+Caspar does not accelerate the pipeline uniformly. It affects bundle adjustment
+inside sparse reconstruction; feature extraction, matching, OpenMVS dense
+reconstruction, meshing, and texturing use different CPU/GPU paths. RunPod GPU
+tiers also arrive with different host CPUs, and the worker caps native tools at
+32 threads. For this medium-sized reconstruction, fixed setup costs and host-CPU
+variation can outweigh Caspar's gain. One run per accelerator is enough for a
+practical end-to-end comparison, but not enough to attribute every difference
+causally to the GPU or Caspar.
+
+The exact RTX 4090 run failed during feature extraction after two seconds with
+native exit code 250/SIGABRT, before sparse reconstruction or Caspar ran. The
+first exact RTX 5090 attempt failed at the same stage after three seconds; the
+single approved retry completed successfully. These failures therefore do not
+show a Caspar bundle-adjustment fault.
+
 ## Reefplot 248-image survey
 
 Run dates: 6–7 October 2026. All runs used OpenReef 0.6.3 with the compact cloud
@@ -47,21 +138,20 @@ Six additional exact-GPU runs were completed on 7 October 2026. RTX PRO 4500
 was not exposed by the available 32 GB tier, so an exact L40S was used as the
 approved mid-tier substitute.
 
-### Ranked compute-only result
+### Ranked compute-only cloud GPU result
 
-| Rank | Accelerator | Comparable compute | Speed-up vs M2 Max | RunPod rate | Compute-only cost |
-| ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | RTX PRO 6000 96 GB | **343 s** | **4.19x** | $3.49/hr | $0.33 |
-| 2 | B200 180 GB | **357 s** | **4.03x** | $8.64/hr | $0.86 |
-| 3 | RTX 4090 24 GB | **428 s** | **3.36x** | $1.10/hr | $0.13 |
-| 4 | RTX 5090 32 GB Pro | **447 s** | **3.22x** | $1.58/hr | $0.20 |
-| 5 | H100 80 GB Pro | **477 s** | **3.02x** | $4.79/hr | $0.63 |
-| 6 | H200 141 GB | **483 s** | **2.98x** | $5.93/hr | $0.80 |
-| 7 | B300 288 GB | **533 s** | **2.70x** | $10.65/hr | $1.58 |
-| 8 | A40 48 GB | **577 s** | **2.49x** | $1.22/hr | $0.20 |
-| 9 | L4 24 GB | **648 s** | **2.22x** | $0.69/hr | $0.12 |
-| 10 | L40S 48 GB | **658 s** | **2.19x** | $1.75/hr | $0.32 |
-| 11 | M2 Max 64 GB | **1,438.245 s** | baseline | local | n/a |
+| Rank | Accelerator | Comparable compute | RunPod rate | Compute-only cost |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | RTX PRO 6000 96 GB | **343 s** | $3.49/hr | $0.33 |
+| 2 | B200 180 GB | **357 s** | $8.64/hr | $0.86 |
+| 3 | RTX 4090 24 GB | **428 s** | $1.10/hr | $0.13 |
+| 4 | RTX 5090 32 GB Pro | **447 s** | $1.58/hr | $0.20 |
+| 5 | H100 80 GB Pro | **477 s** | $4.79/hr | $0.63 |
+| 6 | H200 141 GB | **483 s** | $5.93/hr | $0.80 |
+| 7 | B300 288 GB | **533 s** | $10.65/hr | $1.58 |
+| 8 | A40 48 GB | **577 s** | $1.22/hr | $0.20 |
+| 9 | L4 24 GB | **648 s** | $0.69/hr | $0.12 |
+| 10 | L40S 48 GB | **658 s** | $1.75/hr | $0.32 |
 
 The RTX PRO 6000 was fastest overall. The RTX 4090 was the best value among
 the six new tests: only 71 seconds slower than B200 but about one sixth of
