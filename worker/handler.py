@@ -959,7 +959,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
     command = pipeline_command(dataset)
     cores = pipeline_core_count()
-    backend = os.environ.get("OPENREEF_BA_BACKEND", "caspar").strip().lower()
+    backend = os.environ.get("OPENREEF_BA_BACKEND", "ceres").strip().lower()
     print(
         f"Starting OpenReef compact pipeline with {cores} CPU threads "
         f"and {backend.upper()} bundle adjustment",
@@ -991,12 +991,12 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
 def pipeline_command(dataset: Path) -> list[str]:
     """Build the cloud pipeline command, including its bundle-adjustment mode."""
     cores = pipeline_core_count()
-    backend = os.environ.get("OPENREEF_BA_BACKEND", "caspar").strip().lower()
+    backend = os.environ.get("OPENREEF_BA_BACKEND", "ceres").strip().lower()
     if backend not in {"ceres", "caspar"}:
         raise WorkerConfigurationError(
             "OPENREEF_BA_BACKEND must be either 'ceres' or 'caspar'"
         )
-    ceres_gpu_value = os.environ.get("OPENREEF_CERES_USE_GPU", "0").strip().lower()
+    ceres_gpu_value = os.environ.get("OPENREEF_CERES_USE_GPU", "1").strip().lower()
     if ceres_gpu_value not in {"0", "1", "false", "true", "no", "yes"}:
         raise WorkerConfigurationError(
             "OPENREEF_CERES_USE_GPU must be true/false or 1/0"

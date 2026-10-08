@@ -1,19 +1,28 @@
 {
   "schemaVersion": 1,
   "openreefGPU": {
-    "version": "0.6.4-gpu.4"
+    "version": "0.6.5-gpu.1"
   },
   "openreef": {
-    "version": "0.6.4",
+    "version": "0.6.5",
     "repository": "https://github.com/marine-ecologist/openreef.git",
-    "ref": "v0.6.4",
-    "commit": "e396b72933c4f8ad8f5d2e5175b124c51daed52d"
+    "ref": "v0.6.5",
+    "commit": "7329fe43e3d43f605e9961c608af81e72788b475"
   },
   "colmap": {
     "version": "main-2026-10-07",
     "repository": "https://github.com/colmap/colmap.git",
     "commit": "68b722be23fdba964a24583720bde07675171d47",
-    "casparEnabled": true
+    "casparEnabled": true,
+    "ceresCudaEnabled": true,
+    "ceresCudssEnabled": true
+  },
+  "ceres": {
+    "version": "2.3.0-dev-2026-10-09",
+    "repository": "https://github.com/ceres-solver/ceres-solver.git",
+    "commit": "71be12da7161b567990f165e38771dc9c7e4e96b",
+    "cudaEnabled": true,
+    "cudssEnabled": true
   },
   "openMVS": {
     "version": "2.4.0",

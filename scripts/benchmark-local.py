@@ -193,7 +193,7 @@ def main() -> int:
     output = args.output or dataset / f"openreef-benchmark-{timestamp}.json"
     result = {
         "schemaVersion": 1,
-        "profile": "openreefGPU compact 0.6.4",
+        "profile": "openreefGPU compact 0.6.5",
         "state": "completed" if return_code == 0 else "failed",
         "returnCode": return_code,
         "startedAt": started_at.isoformat(),

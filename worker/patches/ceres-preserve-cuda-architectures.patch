@@ -1,0 +1,22 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4e57d3f..9e843f2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -390,7 +390,8 @@ if (_Ceres_FEATURE_CUDA)
+   set(CUDAToolkit_DEPENDENCY
+     "find_dependency(CUDAToolkit ${CUDAToolkit_VERSION})")
+   enable_language(CUDA)
+-  set(CMAKE_CUDA_ARCHITECTURES "")
++  if (NOT CMAKE_CUDA_ARCHITECTURES)
++    set(CMAKE_CUDA_ARCHITECTURES "")
+   if (CUDAToolkit_VERSION VERSION_LESS "13.0")
+     # Support Maxwell GPUs.
+     list(APPEND CMAKE_CUDA_ARCHITECTURES "50")
+@@ -415,6 +416,7 @@ if (_Ceres_FEATURE_CUDA)
+     # Support Hopper GPUs.
+     list(APPEND CMAKE_CUDA_ARCHITECTURES "90")
+   endif()
++  endif()
+ 
+   if (WITH_CUDA STREQUAL "static")
+     set(CERES_CUDA_TARGET_SUFFIX "_static")

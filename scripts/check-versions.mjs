@@ -42,6 +42,19 @@ assert(
   'The pinned COLMAP build must declare Caspar enabled',
 );
 assert(
+  versions.colmap.ceresCudaEnabled === true &&
+    versions.colmap.ceresCudssEnabled === true,
+  'The pinned COLMAP build must declare CUDA/cuDSS-enabled Ceres',
+);
+assert(
+  /^[0-9a-f]{40}$/.test(versions.ceres.commit),
+  'The pinned Ceres commit must be a full 40-character SHA',
+);
+assert(
+  versions.ceres.cudaEnabled === true && versions.ceres.cudssEnabled === true,
+  'The pinned Ceres build must enable CUDA and cuDSS',
+);
+assert(
   /^[0-9a-f]{40}$/.test(versions.openMVS.commit),
   'The pinned OpenMVS commit must be a full 40-character SHA',
 );
@@ -56,12 +69,24 @@ assert(
 assertDockerArg('OPENREEF_VERSION', versions.openreef.version);
 assertDockerArg('OPENREEF_REF', versions.openreef.commit);
 assertDockerArg('OPENREEF_GPU_VERSION', versions.openreefGPU.version);
+assertDockerArg('CERES_VERSION', versions.ceres.version);
+assertDockerArg('CERES_REF', versions.ceres.commit);
 assertDockerArg('COLMAP_VERSION', versions.colmap.version);
 assertDockerArg('COLMAP_REF', versions.colmap.commit);
 assertDockerArg('OPENMVS_VERSION', versions.openMVS.version);
 assertDockerArg('OPENMVS_REF', versions.openMVS.commit);
 assertDockerArg('CGAL_VERSION', versions.cgal.version);
 assertDockerArg('CGAL_REF', versions.cgal.commit);
+assert(
+  dockerfile.includes("'CERES_CUDA_ENABLED=ON'") &&
+    dockerfile.includes("'CERES_CUDSS_ENABLED=ON'"),
+  'worker/Dockerfile must verify the COLMAP Ceres CUDA/cuDSS link contract',
+);
+assert(
+  dockerfile.includes('OPENREEF_BA_BACKEND=ceres') &&
+    dockerfile.includes('OPENREEF_CERES_USE_GPU=1'),
+  'worker/Dockerfile must default the 0.6.5 cloud mapper to Ceres CUDA',
+);
 assert(
   wrangler.includes(`"OPENREEF_VERSION": "${versions.openreef.version}"`),
   'Cloudflare OPENREEF_VERSION does not match versions.json',

@@ -1,6 +1,6 @@
 {
   "name": "openreef-gpu-api",
-  "version": "0.6.4-gpu.4",
+  "version": "0.6.5-gpu.1",
   "private": true,
   "type": "module",
   "scripts": {
