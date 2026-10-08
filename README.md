@@ -31,7 +31,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.5-gpu.4`, based on OpenReef `0.6.5`. The suffix may advance for
+The current cloud release is `0.6.5-gpu.5`, based on OpenReef `0.6.5`. The suffix may advance for
 cloud-only changes (`gpu.4`, `gpu.5`, `gpu.6`) without pretending the desktop pipeline changed.
 
 ## Version contract
@@ -115,7 +115,7 @@ Build from this repository root:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.5-gpu.4 .
+  -t YOUR_REGISTRY/openreef-gpu:0.6.5-gpu.5 .
 ```
 
 The Dockerfile packages OpenReef `0.6.5` from its pinned commit, a pinned Ceres build compiled with
@@ -126,7 +126,7 @@ test.
 
 After the repository is published on GitHub, run the **Publish RunPod worker image** workflow. It
 publishes the pinned Linux image to GitHub Container Registry as both
-`ghcr.io/<owner>/openreef-gpu:0.6.5-gpu.4` and `:latest`, ready for a RunPod Serverless template.
+`ghcr.io/<owner>/openreef-gpu:0.6.5-gpu.5` and `:latest`, ready for a RunPod Serverless template.
 
 The worker pins Ceres commit `71be12d`, COLMAP commit `68b722b`, OpenMVS 2.4.0 plus its upstream
 Blackwell compatibility fix, and CGAL 6.0.1. Ceres and COLMAP compile CUDA for

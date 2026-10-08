@@ -125,7 +125,7 @@ The recommended first deployment is the included GitHub Actions workflow. In the
 **Actions** tab, run **Publish RunPod worker image**. It builds on a Linux runner and publishes:
 
 ```text
-ghcr.io/<github-owner>/openreef-gpu:0.6.5-gpu.4
+ghcr.io/<github-owner>/openreef-gpu:0.6.5-gpu.5
 ```
 
 Make that package public, or add GitHub Container Registry credentials to the RunPod template. The
@@ -138,8 +138,8 @@ version:
 ```bash
 docker build --platform linux/amd64 \
   -f worker/Dockerfile \
-  -t YOUR_REGISTRY/openreef-gpu:0.6.5-gpu.4 .
-docker push YOUR_REGISTRY/openreef-gpu:0.6.5-gpu.4
+  -t YOUR_REGISTRY/openreef-gpu:0.6.5-gpu.5 .
+docker push YOUR_REGISTRY/openreef-gpu:0.6.5-gpu.5
 ```
 
 The image builds pinned Ceres with CUDA and cuDSS, links pinned COLMAP to that exact Ceres build,
@@ -167,7 +167,7 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.5
-OPENREEF_GPU_VERSION=0.6.5-gpu.4
+OPENREEF_GPU_VERSION=0.6.5-gpu.5
 OPENREEF_BA_BACKEND=ceres
 OPENREEF_CERES_USE_GPU=1
 OPENREEF_BA_GPU_INDEX=-1
