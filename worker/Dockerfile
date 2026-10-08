@@ -63,7 +63,7 @@ RUN git init /opt/colmap \
       -DCASPAR_ENABLED=ON -DCASPAR_USE_DOUBLE=OFF \
       -DGUI_ENABLED=OFF -DTESTS_ENABLED=OFF -DONNX_ENABLED=OFF \
     && grep -q '^CASPAR_ENABLED:BOOL=ON$' /opt/colmap/build/CMakeCache.txt \
-    && grep -q '^Ceres_DIR:PATH=/opt/ceres-install/lib/cmake/Ceres$' /opt/colmap/build/CMakeCache.txt \
+    && grep -Eq '^Ceres_DIR:(PATH|UNINITIALIZED)=/opt/ceres-install/lib/cmake/Ceres$' /opt/colmap/build/CMakeCache.txt \
     && cmake --build /opt/colmap/build --parallel 2 \
     && cmake --install /opt/colmap/build \
     && mkdir -p /opt/colmap-install/share/openreef \
@@ -126,7 +126,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.5
 ARG OPENREEF_REF=7329fe43e3d43f605e9961c608af81e72788b475
-ARG OPENREEF_GPU_VERSION=0.6.5-gpu.1
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.2
 ARG CERES_REF=71be12da7161b567990f165e38771dc9c7e4e96b
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 

@@ -275,10 +275,10 @@ def test_worker_rejects_a_mismatched_openreef_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.5")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.5-gpu.1")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.5-gpu.2")
     payload = {
         "openreef_version": "0.6.4",
-        "openreef_gpu_version": "0.6.5-gpu.1",
+        "openreef_gpu_version": "0.6.5-gpu.2",
     }
 
     with pytest.raises(ValueError, match="does not match"):
@@ -287,13 +287,13 @@ def test_worker_rejects_a_mismatched_openreef_version(
 
 def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENREEF_VERSION", "0.6.5")
-    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.5-gpu.1")
+    monkeypatch.setenv("OPENREEF_GPU_VERSION", "0.6.5-gpu.2")
     payload = {
         "openreef_version": "0.6.5",
-        "openreef_gpu_version": "0.6.5-gpu.1",
+        "openreef_gpu_version": "0.6.5-gpu.2",
     }
 
     assert validate_version_contract(payload, "0.6.5") == {
         "openreef": "0.6.5",
-        "openreefGPU": "0.6.5-gpu.1",
+        "openreefGPU": "0.6.5-gpu.2",
     }
