@@ -1,6 +1,6 @@
 # Caspar bundle-adjustment benchmark
 
-OpenReef 0.6.4 makes the mapper bundle-adjustment backend explicit. openreefGPU 0.6.4-gpu.3
+OpenReef 0.6.4 makes the mapper bundle-adjustment backend explicit. openreefGPU 0.6.4-gpu.4
 compiles COLMAP commit `68b722be23fdba964a24583720bde07675171d47` with
 `CASPAR_ENABLED=ON` and uses Caspar by default on RunPod.
 

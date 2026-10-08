@@ -89,13 +89,17 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.4
 ARG OPENREEF_REF=e396b72933c4f8ad8f5d2e5175b124c51daed52d
-ARG OPENREEF_GPU_VERSION=0.6.4-gpu.3
+ARG OPENREEF_GPU_VERSION=0.6.4-gpu.4
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates python3 python3-pip \
-    libboost-iostreams-dev libboost-program-options-dev libboost-serialization-dev \
-    libceres-dev libglfw3 libopencv-dev \
+    libblas-dev liblapack-dev \
+    libboost-graph-dev libboost-iostreams-dev libboost-program-options-dev \
+    libboost-serialization-dev libboost-system-dev libcgal-dev libceres-dev \
+    libcurl4-openssl-dev libeigen3-dev libglew-dev libglfw3 \
+    libgoogle-glog-dev libmetis-dev libmkl-full-dev libopencv-dev \
+    libopenimageio-dev openimageio-tools libssl-dev libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=openmvs-builder /usr/local/ /usr/local/
 COPY --from=colmap-caspar-builder /opt/colmap-install/ /usr/local/
@@ -119,6 +123,8 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir \
 RUN test "$(python3 -c 'import openreef; print(openreef.__version__)')" = "${OPENREEF_VERSION}"
 RUN test "$(cat /usr/local/share/openreef/COLMAP_REF)" = "${COLMAP_REF}" \
     && test "$(cat /usr/local/share/openreef/COLMAP_BUILD_OPTIONS)" = 'CASPAR_ENABLED=ON'
+RUN test -x "$(command -v colmap)" \
+    && ! ldd "$(command -v colmap)" | grep -q 'not found'
 RUN colmap --help >/dev/null
 
 COPY worker/ /opt/openreefgpu/worker/
