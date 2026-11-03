@@ -25,6 +25,7 @@ export interface BrowserUpload {
 export interface Storage {
   readonly provider: 'sharepoint' | 'google-drive';
   readonly publicRoot: string;
+  jobsFolderUrl?(): Promise<string>;
   ensureFolder(path: string): Promise<void>;
   createBrowserUpload(
     path: string,
@@ -246,6 +247,11 @@ class GoogleDriveStorage implements Storage {
       'GOOGLE_DRIVE_ROOT_FOLDER_ID',
     );
     this.publicRoot = env.GOOGLE_DRIVE_JOB_ROOT || 'jobs';
+  }
+
+  async jobsFolderUrl(): Promise<string> {
+    const folderId = await this.resolveFolder(this.publicRoot, false);
+    return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`;
   }
 
   private fullPath(path: string): string {

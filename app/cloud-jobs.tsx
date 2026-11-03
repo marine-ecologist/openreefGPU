@@ -41,7 +41,8 @@ type CloudJob = {
   stage: string;
   progress: number;
   error?: string;
-  result?: { modelUrl: string; manifestUrl: string };
+  outputMode?: 'compact' | 'full';
+  result?: { modelUrl: string; manifestUrl: string; projectUrl?: string };
   storage?: { provider: 'google-drive' | 'sharepoint'; root: string };
   versions?: { openreef: string; openreefGPU: string };
   transfers?: {
@@ -79,6 +80,8 @@ export function CloudJobs() {
   const [sourceMode, setSourceMode] = useState<'drive' | 'upload'>('drive');
   const [driveFolder, setDriveFolder] = useState('images');
   const [driveLimit, setDriveLimit] = useState(30);
+  const [outputMode, setOutputMode] = useState<'compact' | 'full'>('compact');
+  const [includeSourceImages, setIncludeSourceImages] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [job, setJob] = useState<CloudJob | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -191,6 +194,8 @@ export function CloudJobs() {
         method: 'POST',
         body: JSON.stringify({
           name,
+          outputMode,
+          includeSourceImages: outputMode === 'full' && includeSourceImages,
           ...(sourceMode === 'drive'
             ? { sourceFolder: driveFolder, maxFiles: driveLimit }
             : {
@@ -202,6 +207,9 @@ export function CloudJobs() {
               }),
         }),
       });
+      if (outputMode === 'full' && created.job.outputMode !== 'full') {
+        throw new Error('Full project requires the updated cloud API and worker. Update the deployment before submitting this job.');
+      }
       setJob(created.job);
       let uploadedBytes = 0;
       for (const target of created.uploads) {
@@ -336,6 +344,22 @@ export function CloudJobs() {
                 </button>
               </label>
             )}
+            <label>
+              <span>Save outputs</span>
+              <select value={outputMode} onChange={(event) => setOutputMode(event.target.value as 'compact' | 'full')}>
+                <option value="compact">Compact preview</option>
+                <option value="full">Full project + compact preview</option>
+              </select>
+              <small className="cloud-field-help">
+                Full project retains COLMAP and OpenMVS files, original outputs, settings and logs in a downloadable archive. It uses more processing time and storage; reconstruction resolution settings stay the same.
+              </small>
+            </label>
+            {outputMode === 'full' && (
+              <label className="cloud-checkbox">
+                <input type="checkbox" checked={includeSourceImages} onChange={(event) => setIncludeSourceImages(event.target.checked)} />
+                Include original photographs in the archive
+              </label>
+            )}
             <Button
               onClick={submit}
               disabled={
@@ -462,9 +486,16 @@ export function CloudJobs() {
               </section>
             )}
             {job.state === 'completed' && job.result && (
-              <Button onClick={() => setShowViewer(true)}>
-                Open model in viewer
-              </Button>
+              <>
+                <Button onClick={() => setShowViewer(true)}>
+                  Open model in viewer
+                </Button>
+                {job.result.projectUrl && (
+                  <a className="cloud-project-download" href={absoluteApiUrl(job.result.projectUrl)} download="full-project.tar.gz">
+                    Download full project (.tar.gz)
+                  </a>
+                )}
+              </>
             )}
           </div>
         )}

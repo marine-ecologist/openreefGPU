@@ -56,6 +56,8 @@ interface JobRecord {
   createdAt: string;
   updatedAt: string;
   files: JobFile[];
+  outputMode?: 'compact' | 'full';
+  includeSourceImages?: boolean;
   source?: {
     kind: 'job-upload' | 'storage-folder';
     folder: string;
@@ -69,6 +71,7 @@ interface JobRecord {
   result?: {
     model: string;
     manifest: string;
+    project?: string;
   };
   transfers?: {
     sourceDownload?: TransferMetric;
@@ -109,6 +112,16 @@ const worker = {
           cors,
         );
       }
+      if (request.method === 'GET' && url.pathname === '/v1/jobs-folder') {
+        const storage = storageForEnv(env);
+        if (!storage.jobsFolderUrl) {
+          throw new HttpError(404, 'Past jobs folder link requires Google Drive storage');
+        }
+        return new Response(null, {
+          status: 302,
+          headers: { ...cors, Location: await storage.jobsFolderUrl(), 'Cache-Control': 'no-store' },
+        });
+      }
       if (request.method === 'POST' && url.pathname === '/v1/jobs') {
         return json(await createJob(request, env), 201, cors);
       }
@@ -129,7 +142,7 @@ const worker = {
           parts[3] === 'assets' &&
           parts.length === 5
         ) {
-          return proxyAsset(
+          return await proxyAsset(
             request,
             env,
             jobId,
@@ -162,7 +175,18 @@ async function createJob(request: Request, env: Env) {
     files?: unknown;
     sourceFolder?: unknown;
     maxFiles?: unknown;
+    outputMode?: unknown;
+    includeSourceImages?: unknown;
   }>(request);
+  if (body.outputMode !== undefined && body.outputMode !== 'compact' && body.outputMode !== 'full') {
+    throw new HttpError(400, 'outputMode must be compact or full');
+  }
+  if (body.includeSourceImages !== undefined && typeof body.includeSourceImages !== 'boolean') {
+    throw new HttpError(400, 'includeSourceImages must be a boolean');
+  }
+  if (body.includeSourceImages === true && body.outputMode !== 'full') {
+    throw new HttpError(400, 'Source photographs can only be included with Full project');
+  }
   const name = cleanDatasetName(body.name);
   const storage = storageForEnv(env);
   const sourceFolder =
@@ -188,6 +212,8 @@ async function createJob(request: Request, env: Env) {
     updatedAt: now,
     files,
     source,
+    outputMode: body.outputMode === 'full' ? 'full' : 'compact',
+    includeSourceImages: body.outputMode === 'full' && body.includeSourceImages === true,
     versions: deploymentVersions(env),
     timings: {
       total: {
@@ -281,7 +307,7 @@ async function startJob(jobId: string, env: Env) {
         schema_version: 1,
         job_id: jobId,
         name: job.name,
-        profile: 'compact',
+        profile: job.outputMode ?? 'compact',
         openreef_version: job.versions.openreef,
         openreef_gpu_version: job.versions.openreefGPU,
       },
@@ -365,7 +391,7 @@ async function proxyAsset(
     throw new HttpError(400, 'Invalid asset name');
   const job = await readJob(env, jobId);
   const allowed = new Set(
-    [job.result?.model, job.result?.manifest].filter(Boolean),
+    [job.result?.model, job.result?.manifest, job.result?.project].filter(Boolean),
   );
   if (job.state !== 'completed' || !allowed.has(fileName)) {
     throw new HttpError(404, 'Asset not found');
@@ -390,6 +416,9 @@ async function proxyAsset(
   ]) {
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
+  }
+  if (fileName === job.result?.project) {
+    responseHeaders.set('Content-Disposition', `attachment; filename="${fileName}"`);
   }
   responseHeaders.set('Cache-Control', 'private, max-age=3600');
   return new Response(upstream.body, {
@@ -441,12 +470,14 @@ function publicJob(job: JobRecord, env: Env) {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     error: job.error,
+    outputMode: job.outputMode ?? 'compact',
     transfers: job.transfers,
     timings: job.timings,
     result: job.result
       ? {
           modelUrl: `${assetBase}/${encodeURIComponent(job.result.model)}`,
           manifestUrl: `${assetBase}/${encodeURIComponent(job.result.manifest)}`,
+          projectUrl: job.result.project ? `${assetBase}/${encodeURIComponent(job.result.project)}` : undefined,
         }
       : undefined,
     versions: job.versions,
@@ -678,10 +709,13 @@ function json(value: unknown, status: number, cors: Headers): Response {
 }
 
 class HttpError extends Error {
+  readonly status: number;
+
   constructor(
-    readonly status: number,
+    status: number,
     message: string,
   ) {
     super(message);
+    this.status = status;
   }
 }

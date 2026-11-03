@@ -7,9 +7,11 @@ import http.client
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -784,6 +786,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     storage = create_storage_client()
     job_root = storage.job_path(job_id)
     job = read_job(storage, job_root)
+    output_mode, include_source_images = project_options(job)
     job["state"] = "running"
     start_timing_step(job, "Source staging")
     update_job(storage, job_root, job, stage="Staging source images", progress=3)
@@ -896,9 +899,14 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             run_pipeline(
                 dataset,
                 report_pipeline_stage,
+                full_project=output_mode == "full",
             )
 
             artifacts = select_result_artifacts(dataset)
+            if output_mode == "full":
+                start_timing_step(job, "Archiving full project")
+                update_job(storage, job_root, job, stage="Archiving full project", progress=94)
+                artifacts["project"] = archive_project(dataset, job, include_source_images)
             start_timing_step(job, "Uploading results to Drive")
             update_job(storage, job_root, job, stage="Uploading compact web model", progress=96)
             output_root = f"{job_root}/output"
@@ -931,6 +939,8 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             model_name = next(item["name"] for item in uploaded if item["role"] == "model")
             job["state"] = "completed"
             job["result"] = {"model": model_name, "manifest": "manifest.json"}
+            if "project" in artifacts:
+                job["result"]["project"] = result_file_name("project", artifacts["project"])
             complete_timings(job, "completed")
             update_job(storage, job_root, job, stage="Ready to view", progress=100)
             return {
@@ -956,12 +966,16 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
-def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
-    command = pipeline_command(dataset)
+def run_pipeline(
+    dataset: Path, progress: Callable[[str, int], None], *, full_project: bool = False
+) -> None:
+    command = pipeline_command(dataset, full_project=full_project)
+    log_dir = dataset / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     cores = pipeline_core_count()
     backend = os.environ.get("OPENREEF_BA_BACKEND", "ceres").strip().lower()
     print(
-        f"Starting OpenReef compact pipeline with {cores} CPU threads "
+        f"Starting OpenReef {'full project' if full_project else 'compact'} pipeline with {cores} CPU threads "
         f"and {backend.upper()} bundle adjustment",
         flush=True,
     )
@@ -974,12 +988,16 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
     )
     assert process.stdout is not None
     last_stage = ""
-    for line in process.stdout:
-        print(line, end="", flush=True)
-        stage = stage_from_output(line)
-        if stage and stage != last_stage:
-            last_stage = stage
-            progress(stage, STAGE_PROGRESS[stage])
+    with process.stdout, (log_dir / "pipeline.log").open("w", encoding="utf-8") as log:
+        log.write("Command: " + json.dumps(command) + "\n")
+        for line in process.stdout:
+            log.write(line)
+            log.flush()
+            print(line, end="", flush=True)
+            stage = stage_from_output(line)
+            if stage and stage != last_stage:
+                last_stage = stage
+                progress(stage, STAGE_PROGRESS[stage])
     return_code = process.wait()
     if return_code:
         detail = (
@@ -988,7 +1006,7 @@ def run_pipeline(dataset: Path, progress: Callable[[str, int], None]) -> None:
         raise RuntimeError(f"OpenReef pipeline exited with code {return_code}{detail}")
 
 
-def pipeline_command(dataset: Path) -> list[str]:
+def pipeline_command(dataset: Path, *, full_project: bool = False) -> list[str]:
     """Build the cloud pipeline command, including its bundle-adjustment mode."""
     cores = pipeline_core_count()
     backend = os.environ.get("OPENREEF_BA_BACKEND", "ceres").strip().lower()
@@ -1011,7 +1029,7 @@ def pipeline_command(dataset: Path) -> list[str]:
         "openreef-pipeline",
         str(dataset),
         "--dense-compact",
-        "--no-dense-original",
+        "--dense-original" if full_project else "--no-dense-original",
         "--max-image-size",
         os.environ.get("OPENREEF_MAX_IMAGE_SIZE", "3200"),
         "--max-resolution",
@@ -1067,11 +1085,90 @@ def select_result_artifacts(dataset: Path) -> dict[str, Path]:
     return artifacts
 
 
+def project_options(job: dict[str, Any]) -> tuple[str, bool]:
+    """Old jobs keep compact behavior; reject malformed persisted options."""
+    mode = job.get("outputMode", "compact")
+    include = job.get("includeSourceImages", False)
+    if mode not in ("compact", "full") or not isinstance(include, bool):
+        raise ValueError("Invalid full-project options")
+    if include and mode != "full":
+        raise ValueError("Source photographs require Full project")
+    return mode, include
+
+
+def archive_project(dataset: Path, job: dict[str, Any], include_source_images: bool) -> Path:
+    """Save the project before temporary worker storage is removed.
+
+    Internal model aliases become relative links. Cache-backed source images
+    become real archive files when requested, so no worker/cache paths escape.
+    """
+    dataset = dataset.resolve()
+    metadata = {
+        "schemaVersion": 1,
+        "jobId": job["id"],
+        "dataset": dataset.name,
+        "versions": job.get("versions", {}),
+        "createdAt": utc_now(),
+        "sourceImagesIncluded": include_source_images,
+        "sourceFiles": job.get("files", []),
+        "pipelineCommand": pipeline_command(dataset, full_project=True),
+    }
+    (dataset / "cloud-run.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    (dataset / "CLOUD_PROJECT_README.txt").write_text(
+        "Extract this archive and open the dataset folder in OpenReef.\n"
+        "All generated COLMAP/OpenMVS files and original outputs are retained.\n"
+        "Resolution caps are unchanged from this cloud run; original output does not mean "
+        "uncapped photo resolution.\n"
+        + ("Original photographs are included in images/.\n" if include_source_images else
+           "Copy the source photographs listed in cloud-run.json into images/ before resuming.\n")
+        + "Native scene files may contain worker-specific absolute paths. If needed, "
+        "regenerate undistortion/OpenMVS import locally against the extracted dataset.\n"
+    )
+    entries = []
+    size = 0
+    for path in sorted(dataset.rglob("*")):
+        relative = path.relative_to(dataset)
+        is_source = relative.parts[0] == "images"
+        if is_source and not include_source_images:
+            continue
+        if path.is_symlink():
+            target = path.resolve(strict=True)
+            if not target.is_relative_to(dataset) and not (is_source and target.is_file()):
+                raise RuntimeError(f"Cannot archive external project link: {relative}")
+        if path.is_file() and (not path.is_symlink() or is_source):
+            size += path.stat().st_size
+        entries.append(path)
+    if size + 64 * 1024**2 > shutil.disk_usage(dataset.parent).free:
+        raise RuntimeError("Insufficient temporary disk to archive the full project; increase worker disk")
+    output = dataset.parent / "full-project.tar.gz"
+    with tarfile.open(output, "w:gz", compresslevel=1) as archive:
+        archive.add(dataset, arcname=dataset.name, recursive=False)
+        for path in entries:
+            relative = path.relative_to(dataset)
+            arcname = f"{dataset.name}/{relative.as_posix()}"
+            if path.is_symlink():
+                target = path.resolve(strict=True)
+                if target.is_relative_to(dataset):
+                    info = archive.gettarinfo(str(path), arcname)
+                    target_name = f"{dataset.name}/{target.relative_to(dataset).as_posix()}"
+                    info.linkname = posixpath.relpath(target_name, posixpath.dirname(arcname))
+                    archive.addfile(info)
+                else:
+                    # The only permitted external links are cached source photographs.
+                    info = archive.gettarinfo(str(target), arcname)
+                    with target.open("rb") as source:
+                        archive.addfile(info, source)
+            else:
+                archive.add(path, arcname=arcname, recursive=False)
+    return output
+
+
 def result_file_name(role: str, source: Path) -> str:
     names = {
         "model": "model.glb",
         "flow_surface": "flow-surface.ply",
         "sparse": "sparse.ply",
+        "project": "full-project.tar.gz",
     }
     return names.get(role, safe_file_name(source.name))
 

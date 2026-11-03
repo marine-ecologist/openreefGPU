@@ -153,6 +153,7 @@ button {
   letter-spacing: 0.1em;
 }
 .runtime-card {
+  text-decoration: none;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -161,6 +162,13 @@ button {
   border-radius: 8px;
   background: #24272a;
   color: #f2f2f7;
+}
+.runtime-card[href]:hover {
+  border-color: var(--workflow-accent);
+}
+.runtime-card[href]:focus-visible {
+  outline: 2px solid var(--workflow-accent);
+  outline-offset: 3px;
 }
 .runtime-card + .runtime-card {
   margin-top: 8px;
@@ -778,7 +786,8 @@ button {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.cloud-form input:not(.cloud-file-input) {
+.cloud-form input:not(.cloud-file-input):not([type="checkbox"]),
+.cloud-form select {
   width: 100%;
   height: 40px;
   padding: 0 12px;
@@ -1292,3 +1301,7 @@ button {
     animation-iteration-count: 1 !important;
   }
 }
+
+.cloud-checkbox { display: flex; gap: 10px; align-items: center; color: #ddd; font-size: 13px; }
+.cloud-checkbox input { width: 16px; height: 16px; accent-color: var(--workflow-accent); }
+.cloud-project-download { display: inline-block; margin-top: 12px; color: #8ecbff; text-decoration: underline; }

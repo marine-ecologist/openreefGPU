@@ -6,6 +6,7 @@ import Image from 'next/image';
 import { CloudJobs } from './cloud-jobs';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+const apiUrl = (process.env.NEXT_PUBLIC_OPENREEF_API_URL ?? '').replace(/\/$/, '');
 
 export default function Home() {
   return (
@@ -37,22 +38,30 @@ export default function Home() {
 
         <div className="sidebar-divider" />
         <p className="sidebar-section">CLOUD RUNTIME</p>
-        <div className="runtime-card">
+        <a className="runtime-card" href={`${basePath}/`} aria-label="RunPod Serverless — return to homepage">
           <Cloud aria-hidden="true" />
           <span>
             <strong>RunPod Serverless</strong>
             <small>Scale to zero</small>
           </span>
-        </div>
-        <div className="runtime-card muted">
+        </a>
+        <a
+          className="runtime-card muted"
+          href={apiUrl ? `${apiUrl}/v1/jobs-folder` : undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Google Drive — open past jobs folder"
+          aria-disabled={!apiUrl}
+          title={apiUrl ? 'Open past jobs in Google Drive' : 'Configure the cloud API to open the jobs folder'}
+        >
           <HardDrive aria-hidden="true" />
           <span>
             <strong>Google Drive</strong>
             <small>reefplot storage</small>
           </span>
-        </div>
+        </a>
 
-        <p className="sidebar-version">OpenReefGPU v0.6.5-gpu.5</p>
+        <p className="sidebar-version">OpenReefGPU v0.6.5-gpu.6</p>
       </aside>
 
       <section
