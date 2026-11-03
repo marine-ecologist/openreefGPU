@@ -26,6 +26,7 @@ export interface Storage {
   readonly provider: 'sharepoint' | 'google-drive';
   readonly publicRoot: string;
   jobsFolderUrl?(): Promise<string>;
+  listJobFolders?(cursor?: string): Promise<{ names: string[]; nextCursor?: string }>;
   ensureFolder(path: string): Promise<void>;
   createBrowserUpload(
     path: string,
@@ -252,6 +253,25 @@ class GoogleDriveStorage implements Storage {
   async jobsFolderUrl(): Promise<string> {
     const folderId = await this.resolveFolder(this.publicRoot, false);
     return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`;
+  }
+
+  async listJobFolders(cursor?: string): Promise<{ names: string[]; nextCursor?: string }> {
+    let parentId: string;
+    try {
+      parentId = await this.resolveFolder(this.publicRoot, false);
+    } catch (error) {
+      if (error instanceof StorageError && error.status === 404) return { names: [] };
+      throw error;
+    }
+    const params = new URLSearchParams({
+      q: `'${googleQueryValue(parentId)}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'`,
+      fields: 'nextPageToken,files(name)',
+      pageSize: '8',
+      orderBy: 'createdTime desc',
+    });
+    if (cursor) params.set('pageToken', cursor);
+    const page = await this.request<{ files?: { name: string }[]; nextPageToken?: string }>(`/files?${params}`);
+    return { names: (page.files ?? []).map((file) => file.name), nextCursor: page.nextPageToken };
   }
 
   private fullPath(path: string): string {

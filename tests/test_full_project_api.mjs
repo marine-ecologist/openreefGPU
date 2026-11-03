@@ -92,3 +92,51 @@ test('completed archives support ranged downloads; arbitrary files remain blocke
   assert.equal(await response.text(), 'test');
   assert.equal((await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/assets/private.json`), env)).status, 404);
 });
+
+test('past projects browse persisted records with pagination and no RunPod requests', async () => {
+  setup();
+  const { job: first } = await (await create({ outputMode: 'full' })).json();
+  const { job: second } = await (await create()).json();
+  const record = records.get(`${first.id}/job.json`);
+  record.state = 'completed';
+  record.runpodJobId = 'expired-runpod-job';
+  record.result = { model: 'model.glb', manifest: 'manifest.json', project: 'full-project.tar.gz' };
+  globalThis.__fullProjectStorage.listJobFolders = async (cursor) => {
+    assert.equal(cursor, 'drive-page-2');
+    return { names: [first.id, 'unrelated-folder', second.id], nextCursor: 'drive-page-3' };
+  };
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Browsing must not call RunPod'); };
+  try {
+    const response = await worker.fetch(new Request('https://test/v1/jobs?cursor=drive-page-2'), env);
+    assert.equal(response.status, 200);
+    const page = await response.json();
+    assert.deepEqual(page.jobs.map((job) => job.id), [first.id, second.id]);
+    assert.equal(page.nextCursor, 'drive-page-3');
+    assert.equal(page.jobs[0].outputMode, 'full');
+    assert.ok(page.jobs[0].result.projectUrl.endsWith('full-project.tar.gz'));
+    assert.ok(page.jobs[0].result.modelUrl.endsWith('model.glb'));
+    assert.equal(page.jobs[0].runpodJobId, undefined);
+    assert.equal(page.jobs[1].state, 'uploading');
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('project browsing handles empty folders and invalid records; preserves access checks', async () => {
+  setup();
+  const { job } = await (await create()).json();
+  globalThis.__fullProjectStorage.listJobFolders = async () => ({ names: [job.id] });
+  records.set(`${job.id}/job.json`, { id: 'different-job', name: 'invalid' });
+  let response = await worker.fetch(new Request('https://test/v1/jobs'), env);
+  assert.deepEqual(await response.json(), { jobs: [], skipped: 1 });
+  globalThis.__fullProjectStorage.listJobFolders = async () => ({ names: [] });
+  response = await worker.fetch(new Request('https://test/v1/jobs'), env);
+  assert.deepEqual(await response.json(), { jobs: [], skipped: 0 });
+  response = await worker.fetch(new Request('https://test/v1/jobs'), { ...env, REQUIRE_ACCESS: 'true' });
+  assert.equal(response.status, 401);
+  response = await worker.fetch(new Request('https://test/v1/jobs', { headers: { Origin: 'https://other.example' } }), env);
+  assert.equal(response.status, 403);
+  response = await worker.fetch(new Request(`https://test/v1/jobs?cursor=${'x'.repeat(4097)}`), env);
+  assert.equal(response.status, 400);
+});

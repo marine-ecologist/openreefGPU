@@ -74,3 +74,24 @@ allowlist. CI also runs the existing pytest/ruff suite and web/API build checks.
 The offline checks passed locally. Full frontend/typecheck builds, the existing
 pytest suite and a live reconstruction could not run in this session because
 required dependencies were unavailable and network access was unavailable.
+
+## Browse saved projects
+
+Click **Google Drive · reefplot storage** to open **Past projects**. Select a
+project, then choose **Open in viewer** to open the saved model in a new tab.
+Full project jobs retain both the viewer link and the archive download. Use
+**Open Jobs folder in Drive** for the original Drive folder.
+
+The API's `GET /v1/jobs?cursor=…` lists job folders eight at a time, newest
+folders first, and reads their saved `job.json` records. **Load more projects**
+continues the Drive listing. Non-job folders and missing/invalid records are
+skipped. Saved status is a snapshot; Refresh rereads Drive records. This browser
+uses Google Drive storage and does not poll RunPod or start GPU workers. Existing
+jobs from earlier worker versions can be viewed when they have a completed job
+record and its referenced model asset. Bare model folders without `job.json`
+are not imported automatically.
+
+Deploy the API (`cd cloud/api && npm ci && npx wrangler deploy`) and push the
+frontend changes to GitHub to publish this browser. The API dependency versions
+are pinned with their lockfile. This browsing change requires no new GPU image;
+processing Full project jobs still requires the matching `.6` worker image.

@@ -117,10 +117,16 @@ const worker = {
         if (!storage.jobsFolderUrl) {
           throw new HttpError(404, 'Past jobs folder link requires Google Drive storage');
         }
+        const headers = new Headers(cors);
+        headers.set('Location', await storage.jobsFolderUrl());
+        headers.set('Cache-Control', 'no-store');
         return new Response(null, {
           status: 302,
-          headers: { ...cors, Location: await storage.jobsFolderUrl(), 'Cache-Control': 'no-store' },
+          headers,
         });
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/jobs') {
+        return json(await listJobs(env, url.searchParams.get('cursor') ?? undefined), 200, cors);
       }
       if (request.method === 'POST' && url.pathname === '/v1/jobs') {
         return json(await createJob(request, env), 201, cors);
@@ -351,6 +357,34 @@ async function startJob(jobId: string, env: Env) {
   };
   await writeJob(env, job);
   return publicJob(job, env);
+}
+
+async function listJobs(env: Env, cursor?: string) {
+  if (cursor && cursor.length > 4096) throw new HttpError(400, 'Invalid jobs cursor');
+  const storage = storageForEnv(env);
+  if (!storage.listJobFolders) throw new HttpError(400, 'Project browsing requires Google Drive storage');
+  const page = await storage.listJobFolders(cursor);
+  let skipped = 0;
+  const jobs = [];
+  // Read saved metadata only: browsing never calls RunPod or starts a GPU.
+  // Sequential reads also stay within Drive and Worker connection limits.
+  for (const id of page.names.filter(isJobId)) {
+    try {
+      const job = await storage.readJson<JobRecord>(`${jobFolder(id)}/job.json`);
+      if (!job || job.id !== id || typeof job.name !== 'string' || !job.state) {
+        skipped++;
+        continue;
+      }
+      jobs.push(publicJob(job, env));
+    } catch (error) {
+      if ((error instanceof StorageError && error.status === 404) || error instanceof SyntaxError) {
+        skipped++;
+        continue;
+      }
+      throw error;
+    }
+  }
+  return { jobs, nextCursor: page.nextCursor, skipped };
 }
 
 async function getJob(jobId: string, env: Env) {

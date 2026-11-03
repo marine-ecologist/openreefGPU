@@ -2,13 +2,18 @@
 
 import { Cloud, HardDrive } from 'lucide-react';
 import Image from 'next/image';
+import { useEffect, useState } from 'react';
 
 import { CloudJobs } from './cloud-jobs';
+import { PastProjects } from './past-projects';
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
-const apiUrl = (process.env.NEXT_PUBLIC_OPENREEF_API_URL ?? '').replace(/\/$/, '');
 
 export default function Home() {
+  const [showProjects, setShowProjects] = useState(false);
+  useEffect(() => {
+    setShowProjects(new URLSearchParams(window.location.search).get('projects') === '1');
+  }, []);
   return (
     <main className="app-shell">
       <aside className="app-sidebar" aria-label="OpenReef Cloud">
@@ -47,12 +52,9 @@ export default function Home() {
         </a>
         <a
           className="runtime-card muted"
-          href={apiUrl ? `${apiUrl}/v1/jobs-folder` : undefined}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="Google Drive — open past jobs folder"
-          aria-disabled={!apiUrl}
-          title={apiUrl ? 'Open past jobs in Google Drive' : 'Configure the cloud API to open the jobs folder'}
+          href={`${basePath}/?projects=1`}
+          aria-label="Google Drive — browse past projects"
+          title="Browse saved projects and open models in the viewer"
         >
           <HardDrive aria-hidden="true" />
           <span>
@@ -69,7 +71,7 @@ export default function Home() {
         className="workspace"
         aria-label="Cloud GPU workspace"
       >
-        <CloudJobs />
+        <>{showProjects ? <PastProjects /> : <CloudJobs />}</>
       </section>
     </main>
   );
