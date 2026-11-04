@@ -21,6 +21,9 @@ interface JobFile {
   name: string;
   size: number;
   contentType: string;
+  sourceId?: string;
+  sourceName?: string;
+  sourceMd5?: string;
 }
 
 interface TransferMetric {
@@ -58,6 +61,7 @@ interface JobRecord {
   files: JobFile[];
   outputMode?: 'compact' | 'full';
   includeSourceImages?: boolean;
+  sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
   source?: {
     kind: 'job-upload' | 'storage-folder';
     folder: string;
@@ -196,9 +200,10 @@ async function createJob(request: Request, env: Env) {
   const source = sourceFolder
     ? { kind: 'storage-folder' as const, folder: sourceFolder }
     : { kind: 'job-upload' as const, folder: '' };
-  const files = sourceFolder
+  const sourceSelection = sourceFolder
     ? await filesFromStorageFolder(storage, sourceFolder, body.maxFiles)
-    : validateFiles(body.files);
+    : undefined;
+  const files = sourceSelection ? sourceSelection.files : validateFiles(body.files);
   const perFileUploads = !sourceFolder && body.uploadProtocol === 'per-file';
   if (!sourceFolder && !perFileUploads && files.length > 4) {
     throw new HttpError(400, 'Reload the updated website to upload more than four photos using per-file upload sessions');
@@ -215,6 +220,7 @@ async function createJob(request: Request, env: Env) {
     createdAt: now,
     updatedAt: now,
     files,
+    sourceSummary: sourceSelection?.summary,
     source,
     outputMode: body.outputMode === 'full' ? 'full' : 'compact',
     includeSourceImages: body.outputMode === 'full' && body.includeSourceImages === true,
@@ -310,10 +316,17 @@ async function startJob(jobId: string, env: Env) {
       ? await storage.listRootFiles(job.source.folder)
       : await storage.listFiles(`${jobFolder(jobId)}/input`);
   const uploaded = new Map(
-    children.map((item) => [item.name.toLowerCase(), item.size]),
+    children.map((item) => [item.id ? `id:${item.id}` : `name:${item.name.toLowerCase()}`, item]),
   );
   const missing = job.files.filter(
-    (file) => uploaded.get(file.name.toLowerCase()) !== file.size,
+    (file) => {
+      const item = file.sourceId
+        ? uploaded.get(`id:${file.sourceId}`)
+        : children.find((candidate) => candidate.name.toLowerCase() === file.name.toLowerCase());
+      return !item || item.size !== file.size
+        || (file.sourceName && item.name !== file.sourceName)
+        || (file.sourceMd5 && item.md5Checksum?.toLowerCase() !== file.sourceMd5.toLowerCase());
+    },
   );
   if (missing.length) {
     throw new HttpError(
@@ -525,6 +538,7 @@ function publicJob(job: JobRecord, env: Env) {
     updatedAt: job.updatedAt,
     error: job.error,
     outputMode: job.outputMode ?? 'compact',
+    sourceSummary: job.sourceSummary,
     transfers: job.transfers,
     timings: job.timings,
     result: job.result
@@ -618,7 +632,7 @@ async function filesFromStorageFolder(
   storage: ReturnType<typeof storageForEnv>,
   folder: string,
   limitValue: unknown,
-): Promise<JobFile[]> {
+): Promise<{ files: JobFile[]; summary: { duplicateCopiesSkipped: number; renamedFiles: number } }> {
   const limit =
     limitValue === undefined
       ? MAX_FILES
@@ -628,18 +642,57 @@ async function filesFromStorageFolder(
   if (!Number.isSafeInteger(limit) || limit < 2 || limit > MAX_FILES) {
     throw new HttpError(400, `Photo limit must be between 2 and ${MAX_FILES}`);
   }
-  const items = (await storage.listRootFiles(folder))
+  const candidates = (await storage.listRootFiles(folder))
     .filter((file) =>
       IMAGE_EXTENSIONS.has(file.name.split('.').pop()?.toLowerCase() || ''),
     )
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .slice(0, limit)
-    .map((file) => ({
-      name: file.name,
+    .sort((left, right) => {
+      const a = `${left.name}\u0000${left.id ?? ''}`;
+      const b = `${right.name}\u0000${right.id ?? ''}`;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  const items: JobFile[] = [];
+  const usedNames = new Set<string>();
+  const content = new Set<string>();
+  let duplicateCopiesSkipped = 0;
+  for (const file of candidates) {
+    // An MD5 and byte count identify repeated Drive uploads. A filename or
+    // matching size alone cannot establish that two photos are identical.
+    const identity = file.md5Checksum ? `${file.md5Checksum.toLowerCase()}:${file.size}` : undefined;
+    if (identity && content.has(identity)) {
+      duplicateCopiesSkipped++;
+      continue;
+    }
+    if (identity) content.add(identity);
+    const original = cleanFileName(file.name);
+    let name = original;
+    let suffix = 2;
+    const dot = original.lastIndexOf('.');
+    while (usedNames.has(name.toLowerCase())) {
+      if (!file.id) throw new HttpError(409, `Duplicate source filename cannot be resolved without a file ID: ${file.name}`);
+      const tag = `__${suffix++}`;
+      const extension = dot >= 0 ? original.slice(dot) : '';
+      name = `${original.slice(0, dot >= 0 ? dot : undefined).slice(0, 180 - tag.length - extension.length)}${tag}${extension}`;
+    }
+    usedNames.add(name.toLowerCase());
+    items.push({
+      name,
       size: file.size,
       contentType: 'application/octet-stream',
-    }));
-  return validateFiles(items);
+      ...(storage.provider === 'google-drive' && file.id ? {
+        sourceId: file.id, sourceName: file.name, sourceMd5: file.md5Checksum,
+      } : {}),
+    });
+  }
+  const selected = items.slice(0, limit);
+  const validated = validateFiles(selected);
+  return {
+    files: validated.map((file, index) => ({ ...selected[index], ...file })),
+    summary: {
+      duplicateCopiesSkipped,
+      renamedFiles: selected.filter((file) => file.sourceName && file.name !== file.sourceName).length,
+    },
+  };
 }
 
 function cleanSourceFolder(value: unknown): string {

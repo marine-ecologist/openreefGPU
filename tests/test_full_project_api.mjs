@@ -164,3 +164,45 @@ test('large browser uploads create sessions per file instead of during job creat
   assert.equal((await create({ sourceFolder: undefined, files })).status, 400);
   assert.equal(records.size, 0);
 });
+
+test('Drive duplicate contents are skipped before the photo limit; name collisions retain both IDs', async () => {
+  setup();
+  const input = [
+    { id: 'z', name: 'same.jpg', size: 10, md5Checksum: 'aaa' },
+    { id: 'a', name: 'same.jpg', size: 10, md5Checksum: 'aaa' },
+    { id: 'b', name: 'same.jpg', size: 10, md5Checksum: 'bbb' },
+    { id: 'c', name: 'SAME.JPG', size: 10 },
+    { id: 'd', name: 'same__2.jpg', size: 10, md5Checksum: 'ddd' },
+    { id: 'e', name: 'other.jpg', size: 10, md5Checksum: 'aaa' },
+  ];
+  globalThis.__fullProjectStorage.listRootFiles = async () => [...input].reverse();
+  const response = await create({ maxFiles: 4 });
+  assert.equal(response.status, 201);
+  const { job } = await response.json();
+  const record = records.get(`${job.id}/job.json`);
+  assert.equal(record.files.length, 4);
+  assert.equal(job.sourceSummary.duplicateCopiesSkipped, 2);
+  assert.equal(new Set(record.files.map((file) => file.name.toLowerCase())).size, 4);
+  assert.ok(record.files.some((file) => file.sourceId === 'b'));
+  assert.ok(record.files.some((file) => file.sourceId === 'c'));
+  assert.ok(record.files.some((file) => file.sourceId === 'd'));
+  const ids = record.files.map((file) => file.sourceId);
+  globalThis.__fullProjectStorage.listRootFiles = async () => input;
+  const again = await (await create({ maxFiles: 4 })).json();
+  assert.deepEqual(records.get(`${again.job.id}/job.json`).files.map((file) => file.sourceId), ids);
+});
+
+test('Drive source identity is checked before starting compute', async () => {
+  setup();
+  globalThis.__fullProjectStorage.listRootFiles = async () => [
+    { id: 'a', name: 'a.jpg', size: 10, md5Checksum: 'aaa' },
+    { id: 'b', name: 'a.jpg', size: 10, md5Checksum: 'bbb' },
+  ];
+  const { job } = await (await create()).json();
+  globalThis.__fullProjectStorage.listRootFiles = async () => [
+    { id: 'b', name: 'a.jpg', size: 10, md5Checksum: 'bbb' },
+    { id: 'substitute', name: 'a.jpg', size: 10, md5Checksum: 'aaa' },
+  ];
+  const response = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/start`, { method: 'POST' }), env);
+  assert.equal(response.status, 409);
+});

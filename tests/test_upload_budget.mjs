@@ -73,3 +73,24 @@ test('actual Drive adapter stays within 50 subrequests for 1500-photo upload pre
     console.log(`Drive subrequests: create job ${preparationRequests}; create one upload session ${requests}`);
   } finally { globalThis.fetch = oldFetch; }
 });
+
+test('Drive listing preserves file IDs and checksums across pages', async () => {
+  const { storageForEnv } = await import(storage);
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    if (url.hostname === 'oauth2.googleapis.com') return Response.json({ access_token: 'fake', expires_in: 3600 });
+    const query = url.searchParams.get('q');
+    if (query.includes("name = 'images'")) return Response.json({ files: [{ id: 'photos', name: 'images', mimeType: 'application/vnd.google-apps.folder' }] });
+    assert.ok(url.searchParams.get('fields').includes('md5Checksum'));
+    const second = url.searchParams.has('pageToken');
+    return Response.json({ files: [{ id: second ? 'b' : 'a', name: 'same.jpg', size: '10', md5Checksum: second ? 'bbb' : 'aaa', mimeType: 'image/jpeg' }], ...(second ? {} : { nextPageToken: 'next' }) });
+  };
+  try {
+    const adapter = storageForEnv({ STORAGE_PROVIDER: 'google-drive', GOOGLE_CLIENT_ID: 'fake', GOOGLE_CLIENT_SECRET: 'fake', GOOGLE_REFRESH_TOKEN: 'fake', GOOGLE_DRIVE_ROOT_FOLDER_ID: 'root' });
+    assert.deepEqual(await adapter.listRootFiles('images'), [
+      { id: 'a', name: 'same.jpg', size: 10, md5Checksum: 'aaa' },
+      { id: 'b', name: 'same.jpg', size: 10, md5Checksum: 'bbb' },
+    ]);
+  } finally { globalThis.fetch = previous; }
+});

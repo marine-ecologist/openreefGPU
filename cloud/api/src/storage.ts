@@ -15,6 +15,8 @@ export interface StorageEnv {
 export interface StoredFile {
   name: string;
   size: number;
+  id?: string;
+  md5Checksum?: string;
 }
 
 export interface BrowserUpload {
@@ -234,6 +236,7 @@ type GoogleFile = {
   name: string;
   size?: string;
   mimeType?: string;
+  md5Checksum?: string;
 };
 
 class GoogleDriveStorage implements Storage {
@@ -329,7 +332,7 @@ class GoogleDriveStorage implements Storage {
     do {
       const params = new URLSearchParams({
         q: `'${googleQueryValue(parentId)}' in parents and trashed = false`,
-        fields: 'nextPageToken,files(id,name,size,mimeType)',
+        fields: 'nextPageToken,files(id,name,size,mimeType,md5Checksum)',
         pageSize: '1000',
       });
       if (pageToken) params.set('pageToken', pageToken);
@@ -339,7 +342,7 @@ class GoogleDriveStorage implements Storage {
       }>(`/files?${params.toString()}`);
       for (const file of page.files || []) {
         if (file.mimeType !== 'application/vnd.google-apps.folder') {
-          items.push({ name: file.name, size: Number(file.size || 0) });
+          items.push({ name: file.name, size: Number(file.size || 0), id: file.id, md5Checksum: file.md5Checksum });
         }
       }
       pageToken = page.nextPageToken || '';

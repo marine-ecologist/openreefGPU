@@ -152,7 +152,7 @@ class GraphClient:
         self,
         source: str,
         destination: Path,
-        expected_names: list[str] | None = None,
+        expected_names: list[str | dict[str, Any]] | None = None,
         on_progress: TransferProgress | None = None,
     ) -> int:
         destination.mkdir(parents=True, exist_ok=True)
@@ -370,7 +370,7 @@ class GoogleDriveClient:
         while True:
             query = {
                 "q": f"'{google_query_value(parent_id)}' in parents and trashed = false",
-                "fields": "nextPageToken,files(id,name,size,mimeType)",
+                "fields": "nextPageToken,files(id,name,size,mimeType,md5Checksum)",
                 "pageSize": "1000",
             }
             if page_token:
@@ -389,7 +389,7 @@ class GoogleDriveClient:
         self,
         source: str,
         destination: Path,
-        expected_names: list[str] | None = None,
+        expected_names: list[str | dict[str, Any]] | None = None,
         on_progress: TransferProgress | None = None,
     ) -> int:
         destination.mkdir(parents=True, exist_ok=True)
@@ -409,7 +409,13 @@ class GoogleDriveClient:
             name = safe_file_name(item["name"])
             target = destination / name
             expected_size = int(item.get("size") or 0)
-            cache_target = cache_folder / name if cache_folder else None
+            identity = item.get("_source_identity")
+            cache_name = f"{identity}-{name}" if identity else name
+            cache_target = (
+                cache_folder / cache_name
+                if cache_folder and not item.get("_disable_source_cache")
+                else None
+            )
             if cache_target and cache_file_matches(cache_target, expected_size):
                 cache_hits += 1
                 print(f"Using cached source image {index}/{len(items)}: {name}", flush=True)
@@ -796,7 +802,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             dataset = Path(temporary) / safe_dataset_name(str(job.get("name", "reef-survey")))
             source_folder = job_source_folder(job, job_root)
             expected_names = [
-                safe_file_name(str(item.get("name", "")))
+                item if item.get("sourceId") else safe_file_name(str(item.get("name", "")))
                 for item in job.get("files", [])
                 if isinstance(item, dict)
             ]
@@ -1342,16 +1348,46 @@ def job_source_folder(job: dict[str, Any], job_root: str) -> str:
 
 
 def select_expected_files(
-    items: list[dict[str, Any]], expected_names: list[str] | None
+    items: list[dict[str, Any]], expected_names: list[str | dict[str, Any]] | None
 ) -> list[dict[str, Any]]:
     if expected_names is None:
         return items
-    expected = {name.casefold() for name in expected_names}
-    selected = [item for item in items if str(item.get("name", "")).casefold() in expected]
-    found = {str(item.get("name", "")).casefold() for item in selected}
-    missing = sorted(expected - found)
-    if missing:
-        raise RuntimeError(f"Cloud source folder is missing {len(missing)} expected file(s)")
+    by_id = {str(item.get("id", "")): item for item in items}
+    selected = []
+    names: set[str] = set()
+    for expected in expected_names:
+        if isinstance(expected, dict):
+            item = by_id.get(str(expected.get("sourceId", "")))
+            if item is None:
+                raise RuntimeError(f"Cloud source file is missing: {expected['name']}")
+            checksum = str(expected.get("sourceMd5") or "").lower()
+            if (
+                int(item.get("size") or 0) != int(expected["size"])
+                or item.get("name") != expected.get("sourceName")
+                or (checksum and str(item.get("md5Checksum") or "").lower() != checksum)
+            ):
+                raise RuntimeError(f"Cloud source file changed since submission: {expected['name']}")
+            identity = hashlib.sha256(
+                f"{item['id']}:{checksum}:{expected['size']}".encode()
+            ).hexdigest()[:24]
+            chosen = {
+                **item, "name": expected["name"], "_source_identity": identity,
+                "_disable_source_cache": not checksum,
+            }
+        else:
+            matches = [item for item in items if str(item.get("name", "")).casefold() == expected.casefold()]
+            if not matches:
+                raise RuntimeError("Cloud source folder is missing expected file(s)")
+            if len(matches) > 1:
+                identities = {(str(item.get("md5Checksum") or "").lower(), int(item.get("size") or 0)) for item in matches}
+                if len(identities) != 1 or not next(iter(identities))[0]:
+                    raise RuntimeError(f"Ambiguous duplicate filename: {expected}; submit a new job to retain both files")
+            chosen = min(matches, key=lambda item: str(item.get("id", "")))
+        name = safe_file_name(str(chosen["name"]))
+        if name.casefold() in names:
+            continue
+        names.add(name.casefold())
+        selected.append(chosen)
     return selected
 
 

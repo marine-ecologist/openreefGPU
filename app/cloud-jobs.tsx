@@ -42,6 +42,7 @@ type CloudJob = {
   progress: number;
   error?: string;
   outputMode?: 'compact' | 'full';
+  sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
   result?: { modelUrl: string; manifestUrl: string; projectUrl?: string };
   storage?: { provider: 'google-drive' | 'sharepoint'; root: string };
   versions?: { openreef: string; openreefGPU: string };
@@ -507,6 +508,11 @@ export function CloudJobs() {
           </div>
         )}
 
+        {job?.sourceSummary && (job.sourceSummary.duplicateCopiesSkipped > 0 || job.sourceSummary.renamedFiles > 0) && (
+          <p className="cloud-notice">
+            {job.sourceSummary.duplicateCopiesSkipped} identical copies skipped; {job.sourceSummary.renamedFiles} filenames made unique for this project. Originals in Drive are unchanged.
+          </p>
+        )}
         {error && (
           <p className="cloud-error" role="alert">
             {error}
