@@ -1,0 +1,57 @@
+name: Follow stable OpenReef releases
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: sync-openreef-release
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pin the latest stable desktop release and bump the cloud version
+        id: sync
+        run: node scripts/sync-openreef-release.mjs
+      - name: Validate the updated version files
+        if: steps.sync.outputs.changed == 'true'
+        run: node scripts/check-versions.mjs
+      - name: Open or update the release pull request
+        if: steps.sync.outputs.changed == 'true'
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: automation/openreef-release
+          delete-branch: true
+          commit-message: 'Update OpenReef to ${{ steps.sync.outputs.openreef }} and cloud to ${{ steps.sync.outputs.gpu }}'
+          title: 'Follow OpenReef ${{ steps.sync.outputs.openreef }} (${{ steps.sync.outputs.gpu }})'
+          body: |
+            Pins the new stable OpenReef tag to its resolved commit and updates the cloud packages, lockfiles, Docker build, Cloudflare variables and sidebar together.
+
+            Compatibility tests must pass before merging. A successful main-branch validation builds the worker image. The RunPod endpoint and Cloudflare API still need coordinated deployment before new jobs use the updated version.
+          add-paths: |
+            versions.json
+            package.json
+            package-lock.json
+            cloud/api/package.json
+            cloud/api/package-lock.json
+            cloud/api/wrangler.jsonc
+            worker/Dockerfile
+            app/page.tsx
+      - name: Start compatibility checks explicitly for the automation branch
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref automation/openreef-release

@@ -25,6 +25,19 @@ assert(
   apiPackage.version === versions.openreefGPU.version,
   `cloud/api/package.json is ${apiPackage.version}; expected ${versions.openreefGPU.version}`,
 );
+for (const file of ['package-lock.json', 'cloud/api/package-lock.json']) {
+  const lock = readJson(file);
+  assert(
+    lock.version === versions.openreefGPU.version &&
+      lock.packages?.['']?.version === versions.openreefGPU.version,
+    `${file} root versions do not match versions.json`,
+  );
+}
+assert(
+  readFileSync(resolve(repositoryRoot, 'app/page.tsx'), 'utf8')
+    .includes(`OpenReefGPU v${versions.openreefGPU.version}`),
+  'Sidebar version does not match versions.json',
+);
 assert(
   versions.openreef.ref === `v${versions.openreef.version}`,
   'The pinned OpenReef tag must match its declared version',

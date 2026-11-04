@@ -5,6 +5,10 @@ on:
   push:
     tags:
       - 'v*-gpu.*'
+  workflow_run:
+    workflows: ['Validate openreefGPU']
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -15,11 +19,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  select:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+      sha: ${{ steps.select.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+      - name: Select a validated version change or an explicit build
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" != workflow_run ] || ! git diff --quiet HEAD^ HEAD -- versions.json; then
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
+    needs: select
+    if: needs.select.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.select.outputs.sha }}
 
       - name: Read the version contract
         id: versions

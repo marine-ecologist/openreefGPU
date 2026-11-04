@@ -35,6 +35,9 @@ jobs:
       - name: Check changed web and API code
         run: npx oxlint app/cloud-jobs.tsx app/page.tsx app/layout.tsx cloud/api/src
 
+      - name: Test release synchronization
+        run: node --test tests/test_release_sync.mjs
+
       - name: Test full-project API routes
         run: node --test tests/test_full_project_api.mjs tests/test_upload_budget.mjs
 
