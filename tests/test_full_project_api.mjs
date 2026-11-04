@@ -206,3 +206,78 @@ test('Drive source identity is checked before starting compute', async () => {
   const response = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/start`, { method: 'POST' }), env);
   assert.equal(response.status, 409);
 });
+
+test('runtime picker discovers OpenReef endpoints with sanitized live health', async () => {
+  setup();
+  const previous = globalThis.fetch;
+  const runtimeEnv = { ...env, RUNPOD_ENDPOINT_ID: 'default', RUNPOD_API_KEY: 'private-key' };
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/graphql')) return Response.json({ data: { myself: { endpoints: [
+      { id: 'default', name: 'Current runtime', workersMax: 1, env: ['secret'] },
+      { id: 'fast', name: 'OpenReef fast', gpuIds: 'ADA_24', workersMax: 1 },
+      { id: 'disabled', name: 'OpenReef disabled', workersMax: 0 },
+      { id: 'unrelated', name: 'Other project', workersMax: 1 },
+    ] } } });
+    if (String(input).includes('/fast/health')) throw new Error('Health unavailable');
+    return Response.json({ workers: { idle: 1, running: 0, initializing: 0 }, jobs: { inQueue: 2 }, env: ['secret'] });
+  };
+  try {
+    const response = await worker.fetch(new Request('https://test/v1/runpod/endpoints'), runtimeEnv);
+    const body = await response.json();
+    assert.deepEqual(body.endpoints.map((item) => item.id), ['default', 'disabled', 'fast']);
+    assert.equal(body.endpoints[0].health.idle, 1);
+    assert.equal(body.endpoints[2].health, undefined);
+    assert.equal(JSON.stringify(body).includes('secret'), false);
+    assert.equal(JSON.stringify(body).includes('private-key'), false);
+    const restricted = await worker.fetch(new Request('https://test/v1/runpod/endpoints'), { ...runtimeEnv, RUNPOD_ALLOWED_ENDPOINT_IDS: 'fast' });
+    assert.deepEqual((await restricted.json()).endpoints.map((item) => item.id), ['default', 'fast']);
+  } finally { globalThis.fetch = previous; }
+});
+
+test('selected runtime is persisted and used for submission and status after the default changes', async () => {
+  setup();
+  const previous = globalThis.fetch;
+  const runtimeEnv = { ...env, RUNPOD_ENDPOINT_ID: 'default', RUNPOD_API_KEY: 'private-key' };
+  const urls = [];
+  let enabled = true;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.endsWith('/graphql')) return Response.json({ data: { myself: { endpoints: [
+      { id: 'fast', name: 'OpenReef fast', workersMax: enabled ? 1 : 0 },
+    ] } } });
+    if (url.endsWith('/fast/run')) return Response.json({ id: 'run-id' });
+    if (url.endsWith('/fast/status/run-id')) return Response.json({ status: 'IN_PROGRESS' });
+    throw new Error(`Unexpected runtime URL: ${url}`);
+  };
+  const createSelected = (id) => worker.fetch(new Request('https://test/v1/jobs', {
+    method: 'POST', body: JSON.stringify({ name: 'survey', sourceFolder: 'images', runpodEndpointId: id }),
+  }), runtimeEnv);
+  try {
+    assert.equal((await createSelected('unrelated')).status, 400);
+    const { job } = await (await createSelected('fast')).json();
+    assert.equal(records.get(`${job.id}/job.json`).runpodEndpointId, 'fast');
+    assert.equal(job.runtime.name, 'OpenReef fast');
+    const started = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/start`, { method: 'POST' }), runtimeEnv);
+    assert.equal(started.status, 202);
+    const status = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}`), { ...runtimeEnv, RUNPOD_ENDPOINT_ID: 'new-default' });
+    assert.equal(status.status, 200);
+    assert.ok(urls.some((url) => url.endsWith('/fast/run')));
+    assert.ok(urls.some((url) => url.endsWith('/fast/status/run-id')));
+    enabled = false;
+    assert.equal((await createSelected('fast')).status, 409);
+  } finally { globalThis.fetch = previous; }
+});
+
+test('runtime discovery outages retain the default with explicitly unknown health', async () => {
+  setup();
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('Offline'); };
+  try {
+    const response = await worker.fetch(new Request('https://test/v1/runpod/endpoints'), { ...env, RUNPOD_ENDPOINT_ID: 'default' });
+    const body = await response.json();
+    assert.equal(body.endpoints[0].id, 'default');
+    assert.equal(body.endpoints[0].health, undefined);
+    assert.ok(body.warning);
+  } finally { globalThis.fetch = previous; }
+});

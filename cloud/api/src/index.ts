@@ -7,6 +7,7 @@ interface Env extends StorageEnv {
   OPENREEF_GPU_VERSION: string;
   RUNPOD_ENDPOINT_ID: string;
   RUNPOD_API_KEY: string;
+  RUNPOD_ALLOWED_ENDPOINT_IDS?: string;
 }
 
 type JobState =
@@ -71,6 +72,8 @@ interface JobRecord {
     openreefGPU: string;
   };
   runpodJobId?: string;
+  runpodEndpointId?: string;
+  runpodEndpointName?: string;
   error?: string;
   result?: {
     model: string;
@@ -118,6 +121,9 @@ const worker = {
       }
       if (request.method === 'GET' && url.pathname === '/v1/jobs') {
         return json(await listJobs(env, url.searchParams.get('cursor') ?? undefined), 200, cors);
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/runpod/endpoints') {
+        return json(await listRunpodEndpoints(env), 200, cors);
       }
       if (request.method === 'POST' && url.pathname === '/v1/jobs') {
         return json(await createJob(request, env), 201, cors);
@@ -167,6 +173,79 @@ const worker = {
 
 export default worker;
 
+type RunpodEndpoint = {
+  id: string;
+  name: string;
+  gpuIds?: string;
+  workersMin?: number;
+  workersMax?: number;
+};
+
+async function runpodEndpoints(env: Env): Promise<RunpodEndpoint[]> {
+  let response: Response;
+  try {
+    response = await fetch('https://api.runpod.io/graphql', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'query { myself { endpoints { id name gpuIds workersMin workersMax } } }' }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new HttpError(502, 'Could not list RunPod endpoints');
+  }
+  const payload = await response.json<{ data?: { myself?: { endpoints?: RunpodEndpoint[] } }; errors?: unknown[] }>();
+  if (!response.ok || payload.errors?.length || !Array.isArray(payload.data?.myself?.endpoints)) {
+    throw new HttpError(502, 'Could not list RunPod endpoints; check the server API key permissions');
+  }
+  const configured = env.RUNPOD_ALLOWED_ENDPOINT_IDS?.split(',').map((id) => id.trim()).filter(Boolean);
+  const allowed = new Set([env.RUNPOD_ENDPOINT_ID, ...(configured ?? [])]);
+  // An explicit allowlist restricts discovery. Otherwise discover OpenReef-
+  // named endpoints only, keeping unrelated account workloads out of the UI.
+  return payload.data.myself.endpoints
+    .filter((item) => typeof item.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(item.id)
+      && (allowed.has(item.id) || (!configured?.length && /^openreef(?:\b|[-_])/i.test(item.name ?? ''))))
+    .map((item) => ({
+      id: item.id, name: item.name || item.id,
+      gpuIds: typeof item.gpuIds === 'string' ? item.gpuIds : undefined,
+      workersMin: typeof item.workersMin === 'number' ? item.workersMin : undefined,
+      workersMax: typeof item.workersMax === 'number' ? item.workersMax : undefined,
+    }))
+    .sort((a, b) => Number(b.id === env.RUNPOD_ENDPOINT_ID) - Number(a.id === env.RUNPOD_ENDPOINT_ID) || a.name.localeCompare(b.name));
+}
+
+async function listRunpodEndpoints(env: Env) {
+  let endpoints: RunpodEndpoint[];
+  let warning: string | undefined;
+  try { endpoints = await runpodEndpoints(env); }
+  catch {
+    endpoints = env.RUNPOD_ENDPOINT_ID ? [{ id: env.RUNPOD_ENDPOINT_ID, name: 'Default OpenReef endpoint' }] : [];
+    warning = 'Endpoint discovery unavailable. Only the configured default is shown.';
+  }
+  const readHealth = async (endpoint: RunpodEndpoint) => {
+    let health: { idle: number; running: number; initializing: number; queued: number } | undefined;
+    try {
+      const response = await fetch(`${RUNPOD_ROOT}/${endpoint.id}/health`, {
+        headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` }, signal: AbortSignal.timeout(5_000),
+      });
+      if (response.ok) {
+        const body = await response.json<{ workers?: Record<string, number>; jobs?: Record<string, number> }>();
+        const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+        if (body.workers) health = {
+          idle: count(body.workers.idle), running: count(body.workers.running),
+          initializing: count(body.workers.initializing), queued: count(body.jobs?.inQueue),
+        };
+      }
+    } catch { /* A failed health check is unknown, not zero available workers. */ }
+    return { ...endpoint, isDefault: endpoint.id === env.RUNPOD_ENDPOINT_ID, health };
+  };
+  const entries = [];
+  for (let start = 0; start < Math.min(endpoints.length, 12); start += 3) {
+    entries.push(...await Promise.all(endpoints.slice(start, Math.min(start + 3, 12)).map(readHealth)));
+  }
+  return { endpoints: entries, checkedAt: new Date().toISOString(), warning,
+    truncated: endpoints.length > 12 };
+}
+
 async function createJob(request: Request, env: Env) {
   const preparationStartedAt = new Date().toISOString();
   const preparationStarted = Date.now();
@@ -178,6 +257,7 @@ async function createJob(request: Request, env: Env) {
     outputMode?: unknown;
     includeSourceImages?: unknown;
     uploadProtocol?: unknown;
+    runpodEndpointId?: unknown;
   }>(request);
   if (body.uploadProtocol !== undefined && body.uploadProtocol !== 'per-file') {
     throw new HttpError(400, 'Unsupported upload protocol');
@@ -192,6 +272,18 @@ async function createJob(request: Request, env: Env) {
     throw new HttpError(400, 'Source photographs can only be included with Full project');
   }
   const name = cleanDatasetName(body.name);
+  let endpointId = env.RUNPOD_ENDPOINT_ID;
+  let endpointName = 'Default OpenReef endpoint';
+  if (body.runpodEndpointId !== undefined && body.runpodEndpointId !== '') {
+    if (typeof body.runpodEndpointId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(body.runpodEndpointId)) {
+      throw new HttpError(400, 'Invalid RunPod endpoint selection');
+    }
+    const endpoint = (await runpodEndpoints(env)).find((item) => item.id === body.runpodEndpointId);
+    if (!endpoint) throw new HttpError(400, 'Selected RunPod endpoint is not enabled for OpenReef');
+    if (endpoint.workersMax === 0) throw new HttpError(409, 'Selected RunPod endpoint is disabled');
+    endpointId = endpoint.id;
+    endpointName = endpoint.name;
+  }
   const storage = storageForEnv(env);
   const sourceFolder =
     body.sourceFolder === undefined
@@ -220,6 +312,8 @@ async function createJob(request: Request, env: Env) {
     createdAt: now,
     updatedAt: now,
     files,
+    runpodEndpointId: endpointId,
+    runpodEndpointName: endpointName,
     sourceSummary: sourceSelection?.summary,
     source,
     outputMode: body.outputMode === 'full' ? 'full' : 'compact',
@@ -335,7 +429,14 @@ async function startJob(jobId: string, env: Env) {
     );
   }
 
-  const response = await fetch(`${RUNPOD_ROOT}/${env.RUNPOD_ENDPOINT_ID}/run`, {
+  const endpointId = job.runpodEndpointId || env.RUNPOD_ENDPOINT_ID;
+  // Revalidate explicit alternatives in case they were disabled or removed
+  // while the user was uploading. Never silently move a job to another endpoint.
+  if (endpointId !== env.RUNPOD_ENDPOINT_ID) {
+    const endpoint = (await runpodEndpoints(env)).find((item) => item.id === endpointId);
+    if (!endpoint || endpoint.workersMax === 0) throw new HttpError(409, 'Selected RunPod endpoint is no longer enabled');
+  }
+  const response = await fetch(`${RUNPOD_ROOT}/${endpointId}/run`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.RUNPOD_API_KEY}`,
@@ -386,6 +487,7 @@ async function startJob(jobId: string, env: Env) {
     stage: 'Waiting for a GPU worker',
     progress: 1,
     runpodJobId: result.id,
+    runpodEndpointId: endpointId,
     updatedAt: new Date().toISOString(),
   };
   await writeJob(env, job);
@@ -426,7 +528,7 @@ async function getJob(jobId: string, env: Env) {
     job.runpodJobId &&
     !['completed', 'failed', 'cancelled'].includes(job.state)
   ) {
-    const status = await runpodStatus(env, job.runpodJobId);
+    const status = await runpodStatus(env, job.runpodJobId, job.runpodEndpointId);
     const state = mapRunpodState(status.status);
     if (state && state !== job.state) {
       // The GPU worker writes richer stage/progress updates. Only persist a
@@ -494,9 +596,9 @@ async function proxyAsset(
   });
 }
 
-async function runpodStatus(env: Env, id: string) {
+async function runpodStatus(env: Env, id: string, endpointId = env.RUNPOD_ENDPOINT_ID) {
   const response = await fetch(
-    `${RUNPOD_ROOT}/${env.RUNPOD_ENDPOINT_ID}/status/${id}`,
+    `${RUNPOD_ROOT}/${endpointId}/status/${id}`,
     {
       headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` },
     },
@@ -539,6 +641,7 @@ function publicJob(job: JobRecord, env: Env) {
     error: job.error,
     outputMode: job.outputMode ?? 'compact',
     sourceSummary: job.sourceSummary,
+    runtime: job.runpodEndpointId ? { endpointId: job.runpodEndpointId, name: job.runpodEndpointName ?? 'OpenReef endpoint' } : undefined,
     transfers: job.transfers,
     timings: job.timings,
     result: job.result

@@ -43,6 +43,7 @@ type CloudJob = {
   error?: string;
   outputMode?: 'compact' | 'full';
   sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
+  runtime?: { endpointId: string; name: string };
   result?: { modelUrl: string; manifestUrl: string; projectUrl?: string };
   storage?: { provider: 'google-drive' | 'sharepoint'; root: string };
   versions?: { openreef: string; openreefGPU: string };
@@ -75,6 +76,11 @@ type UploadTarget = {
 };
 
 type CreateJobResponse = { job: CloudJob; uploads: UploadTarget[]; uploadSessionPath?: string };
+type RuntimeEndpoint = {
+  id: string; name: string; gpuIds?: string; workersMax?: number; isDefault: boolean;
+  health?: { idle: number; running: number; initializing: number; queued: number };
+};
+type RuntimeCatalog = { endpoints: RuntimeEndpoint[]; checkedAt: string; warning?: string; truncated?: boolean };
 
 export function CloudJobs() {
   const [name, setName] = useState('New reef survey');
@@ -90,7 +96,26 @@ export function CloudJobs() {
   const [error, setError] = useState<string | null>(null);
   const [showViewer, setShowViewer] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
+  const [runtimeCatalog, setRuntimeCatalog] = useState<RuntimeCatalog | null>(null);
+  const [runtimeId, setRuntimeId] = useState('');
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeError, setRuntimeError] = useState('');
+  const [runtimeRefresh, setRuntimeRefresh] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!API_URL) return;
+    const controller = new AbortController();
+    setRuntimeLoading(true);
+    setRuntimeError('');
+    api<RuntimeCatalog>('/v1/runpod/endpoints', { signal: controller.signal })
+      .then((catalog) => { if (!controller.signal.aborted) setRuntimeCatalog(catalog); })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setRuntimeError(reason instanceof Error ? reason.message : 'Could not load RunPod workers.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setRuntimeLoading(false); });
+    return () => controller.abort();
+  }, [runtimeRefresh]);
 
   const totalBytes = useMemo(
     () => files.reduce((total, file) => total + file.size, 0),
@@ -198,6 +223,7 @@ export function CloudJobs() {
           outputMode,
           includeSourceImages: outputMode === 'full' && includeSourceImages,
           uploadProtocol: sourceMode === 'upload' ? 'per-file' : undefined,
+          runpodEndpointId: runtimeId || undefined,
           ...(sourceMode === 'drive'
             ? { sourceFolder: driveFolder, maxFiles: driveLimit }
             : {
@@ -268,6 +294,27 @@ export function CloudJobs() {
 
         {!job || job.state === 'failed' ? (
           <div className="cloud-form">
+            <label>
+              <span>RunPod runtime</span>
+              <select value={runtimeId} disabled={submitting || runtimeLoading} onChange={(event) => setRuntimeId(event.target.value)}>
+                <option value="">Configured default endpoint</option>
+                {runtimeCatalog?.endpoints.map((endpoint) => (
+                  <option key={endpoint.id} value={endpoint.id} disabled={endpoint.workersMax === 0}>
+                    {endpoint.name}{endpoint.gpuIds ? ` · ${endpoint.gpuIds}` : ''}
+                    {endpoint.workersMax === 0 ? ' · disabled' : endpoint.health
+                      ? ` · ${endpoint.health.idle} idle, ${endpoint.health.running} busy, ${endpoint.health.initializing} starting`
+                      : ' · status unknown'}
+                  </option>
+                ))}
+              </select>
+              <small className="cloud-field-help">Select an OpenReef endpoint; RunPod assigns an individual worker. Zero idle workers may mean it has scaled to zero. The endpoint needs the matching OpenReef image and storage credentials.</small>
+            </label>
+            <button type="button" disabled={runtimeLoading || submitting || !API_URL} onClick={() => setRuntimeRefresh((value) => value + 1)}>
+              {runtimeLoading ? 'Checking workers…' : 'Refresh RunPod workers'}
+            </button>
+            {runtimeCatalog?.checkedAt && <small>Worker status checked {new Date(runtimeCatalog.checkedAt).toLocaleTimeString()}</small>}
+            {(runtimeError || runtimeCatalog?.warning) && <p className="cloud-notice" role="status">{runtimeError || runtimeCatalog?.warning}</p>}
+            {runtimeCatalog?.truncated && <p className="cloud-notice">Showing the first 12 endpoints. Configure the endpoint allowlist to narrow the selection.</p>}
             <label>
               <span>Survey name</span>
               <input
@@ -397,6 +444,7 @@ export function CloudJobs() {
                 <strong>{job.stage}</strong>
                 <small>
                   {job.name} · {job.id.slice(0, 8)}
+                  {job.runtime ? ` · ${job.runtime.name}` : ''}
                   {job.versions ? ` · OpenReef ${job.versions.openreef}` : ''}
                 </small>
               </div>
