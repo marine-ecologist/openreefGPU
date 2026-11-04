@@ -79,8 +79,9 @@ required dependencies were unavailable and network access was unavailable.
 
 Click **Google Drive · reefplot storage** to open **Past projects**. Select a
 project, then choose **Open in viewer** to open the saved model in a new tab.
-Full project jobs retain both the viewer link and the archive download. Use
-**Open Jobs folder in Drive** for the original Drive folder.
+Full project jobs retain both the viewer link and the archive download.
+The interface provides no direct Drive links; the old `/v1/jobs-folder` redirect
+is removed. Google Drive remains the storage provider behind the project browser.
 
 The API's `GET /v1/jobs?cursor=…` lists job folders eight at a time, newest
 folders first, and reads their saved `job.json` records. **Load more projects**

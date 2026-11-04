@@ -78,7 +78,6 @@ export function PastProjects() {
         <p className="cloud-lead">Select a saved project to view its model. Browsing and viewing use no GPU compute.</p>
         <div className="past-project-actions">
           <button type="button" disabled={loading} onClick={() => setRefresh((value) => value + 1)}>Refresh projects</button>
-          {apiUrl && <a href={`${apiUrl}/v1/jobs-folder`} target="_blank" rel="noopener noreferrer">Open Jobs folder in Drive</a>}
           <a href={`${basePath}/`}>New reconstruction</a>
         </div>
         {error && <p className="cloud-error" role="alert">{error}</p>}

@@ -38,16 +38,12 @@ const create = (options = {}) => worker.fetch(new Request('https://test/v1/jobs'
   body: JSON.stringify({ name: 'survey', sourceFolder: 'images', ...options }),
 }), env);
 
-test('past jobs link redirects to configured storage folder without creating a job', async () => {
+test('direct Drive folder redirect is unavailable', async () => {
   setup();
-  globalThis.__fullProjectStorage.jobsFolderUrl = async () => 'https://drive.google.com/drive/folders/jobs-folder';
   const response = await worker.fetch(new Request('https://test/v1/jobs-folder'), env);
-  assert.equal(response.status, 302);
-  assert.equal(response.headers.get('Location'), 'https://drive.google.com/drive/folders/jobs-folder');
-  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get('Location'), null);
   assert.equal(records.size, 0);
-  delete globalThis.__fullProjectStorage.jobsFolderUrl;
-  assert.equal((await worker.fetch(new Request('https://test/v1/jobs-folder'), env)).status, 404);
 });
 
 test('full-project options persist; old clients default to compact', async () => {

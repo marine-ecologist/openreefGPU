@@ -112,19 +112,6 @@ const worker = {
           cors,
         );
       }
-      if (request.method === 'GET' && url.pathname === '/v1/jobs-folder') {
-        const storage = storageForEnv(env);
-        if (!storage.jobsFolderUrl) {
-          throw new HttpError(404, 'Past jobs folder link requires Google Drive storage');
-        }
-        const headers = new Headers(cors);
-        headers.set('Location', await storage.jobsFolderUrl());
-        headers.set('Cache-Control', 'no-store');
-        return new Response(null, {
-          status: 302,
-          headers,
-        });
-      }
       if (request.method === 'GET' && url.pathname === '/v1/jobs') {
         return json(await listJobs(env, url.searchParams.get('cursor') ?? undefined), 200, cors);
       }
