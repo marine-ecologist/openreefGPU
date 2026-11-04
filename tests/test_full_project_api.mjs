@@ -140,3 +140,31 @@ test('project browsing handles empty folders and invalid records; preserves acce
   response = await worker.fetch(new Request(`https://test/v1/jobs?cursor=${'x'.repeat(4097)}`), env);
   assert.equal(response.status, 400);
 });
+
+test('large browser uploads create sessions per file instead of during job creation', async () => {
+  setup();
+  const sessions = [];
+  globalThis.__fullProjectStorage.createBrowserUpload = async (path, size, contentType) => {
+    sessions.push({ path, size, contentType });
+    return { uploadUrl: 'https://google.test/session', expiresAt: 'later' };
+  };
+  const files = Array.from({ length: 1500 }, (_, index) => ({ name: `photo-${index}.jpg`, size: 10, contentType: 'image/jpeg' }));
+  const response = await create({ sourceFolder: undefined, files, uploadProtocol: 'per-file' });
+  assert.equal(response.status, 201);
+  const created = await response.json();
+  assert.deepEqual(created.uploads, []);
+  assert.equal(sessions.length, 0);
+  assert.equal(records.get(`${created.job.id}/job.json`).files.length, 1500);
+  const sessionRequest = (fileIndex) => worker.fetch(new Request(`https://test${created.uploadSessionPath}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileIndex }),
+  }), env);
+  assert.equal((await sessionRequest(1499)).status, 200);
+  assert.deepEqual(sessions, [{ path: `${created.job.id}/input/photo-1499.jpg`, size: 10, contentType: 'image/jpeg' }]);
+  for (const index of [-1, 1500, '0', 0.5]) assert.equal((await sessionRequest(index)).status, 400);
+  assert.equal(sessions.length, 1);
+  records.get(`${created.job.id}/job.json`).state = 'queued';
+  assert.equal((await sessionRequest(0)).status, 409);
+  setup();
+  assert.equal((await create({ sourceFolder: undefined, files })).status, 400);
+  assert.equal(records.size, 0);
+});

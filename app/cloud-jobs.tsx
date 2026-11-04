@@ -73,7 +73,7 @@ type UploadTarget = {
   uploadUrl: string;
 };
 
-type CreateJobResponse = { job: CloudJob; uploads: UploadTarget[] };
+type CreateJobResponse = { job: CloudJob; uploads: UploadTarget[]; uploadSessionPath?: string };
 
 export function CloudJobs() {
   const [name, setName] = useState('New reef survey');
@@ -196,6 +196,7 @@ export function CloudJobs() {
           name,
           outputMode,
           includeSourceImages: outputMode === 'full' && includeSourceImages,
+          uploadProtocol: sourceMode === 'upload' ? 'per-file' : undefined,
           ...(sourceMode === 'drive'
             ? { sourceFolder: driveFolder, maxFiles: driveLimit }
             : {
@@ -212,7 +213,13 @@ export function CloudJobs() {
       }
       setJob(created.job);
       let uploadedBytes = 0;
-      for (const target of created.uploads) {
+      const uploadCount = created.uploadSessionPath ? files.length : created.uploads.length;
+      for (let index = 0; index < uploadCount; index++) {
+        const target = created.uploadSessionPath
+          ? await api<UploadTarget>(created.uploadSessionPath, {
+              method: 'POST', body: JSON.stringify({ fileIndex: index }),
+            })
+          : created.uploads[index];
         const file = files.find((candidate) => candidate.name === target.name);
         if (!file)
           throw new Error(

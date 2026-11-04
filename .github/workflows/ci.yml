@@ -36,7 +36,7 @@ jobs:
         run: npx oxlint app/cloud-jobs.tsx app/page.tsx app/layout.tsx cloud/api/src
 
       - name: Test full-project API routes
-        run: node --test tests/test_full_project_api.mjs
+        run: node --test tests/test_full_project_api.mjs tests/test_upload_budget.mjs
 
       - name: Build the browser application
         run: npm run build

@@ -133,6 +133,9 @@ const worker = {
       }
       if (parts[0] === 'v1' && parts[1] === 'jobs' && isJobId(parts[2])) {
         const jobId = parts[2];
+        if (request.method === 'POST' && parts[3] === 'uploads' && parts.length === 4) {
+          return json(await createUploadSession(request, jobId, env), 200, cors);
+        }
         if (
           request.method === 'POST' &&
           parts[3] === 'start' &&
@@ -183,7 +186,11 @@ async function createJob(request: Request, env: Env) {
     maxFiles?: unknown;
     outputMode?: unknown;
     includeSourceImages?: unknown;
+    uploadProtocol?: unknown;
   }>(request);
+  if (body.uploadProtocol !== undefined && body.uploadProtocol !== 'per-file') {
+    throw new HttpError(400, 'Unsupported upload protocol');
+  }
   if (body.outputMode !== undefined && body.outputMode !== 'compact' && body.outputMode !== 'full') {
     throw new HttpError(400, 'outputMode must be compact or full');
   }
@@ -205,6 +212,10 @@ async function createJob(request: Request, env: Env) {
   const files = sourceFolder
     ? await filesFromStorageFolder(storage, sourceFolder, body.maxFiles)
     : validateFiles(body.files);
+  const perFileUploads = !sourceFolder && body.uploadProtocol === 'per-file';
+  if (!sourceFolder && !perFileUploads && files.length > 4) {
+    throw new HttpError(400, 'Reload the updated website to upload more than four photos using per-file upload sessions');
+  }
   const id = crypto.randomUUID();
   const now = preparationStartedAt;
   const record: JobRecord = {
@@ -243,23 +254,25 @@ async function createJob(request: Request, env: Env) {
   await storage.ensureFolder(`${jobFolder(id)}/output`);
   await writeJob(env, record);
 
-  const uploads = sourceFolder
+  const uploads = sourceFolder || perFileUploads
     ? []
-    : await Promise.all(
-        files.map(async (file) => {
+    : await (async () => {
+        const targets = [];
+        for (const file of files) {
           const session = await storage.createBrowserUpload(
             `${jobFolder(id)}/input/${file.name}`,
             file.size,
             file.contentType,
           );
-          return {
+          targets.push({
             name: file.name,
             size: file.size,
             uploadUrl: session.uploadUrl,
             expiresAt: session.expiresAt,
-          };
-        }),
-      );
+          });
+        }
+        return targets;
+      })();
   const preparedAt = new Date().toISOString();
   const preparation = record.timings!.steps[0];
   preparation.state = 'completed';
@@ -276,7 +289,27 @@ async function createJob(request: Request, env: Env) {
   }
   record.updatedAt = preparedAt;
   await writeJob(env, record);
-  return { job: publicJob(record, env), uploads };
+  return {
+    job: publicJob(record, env), uploads,
+    uploadSessionPath: perFileUploads ? `/v1/jobs/${id}/uploads` : undefined,
+  };
+}
+
+async function createUploadSession(request: Request, jobId: string, env: Env) {
+  const storage = storageForEnv(env);
+  const job = await storage.readJson<JobRecord>(`${jobFolder(jobId)}/job.json`);
+  if (job.state !== 'uploading' || job.source?.kind === 'storage-folder') {
+    throw new HttpError(409, 'This job is not accepting photo uploads');
+  }
+  const body = await parseJson<{ fileIndex?: unknown }>(request);
+  if (!Number.isInteger(body.fileIndex) || (body.fileIndex as number) < 0 || (body.fileIndex as number) >= job.files.length) {
+    throw new HttpError(400, 'Invalid upload file index');
+  }
+  const file = job.files[body.fileIndex as number];
+  const session = await storage.createBrowserUpload(
+    `${jobFolder(jobId)}/input/${file.name}`, file.size, file.contentType,
+  );
+  return { name: file.name, size: file.size, ...session };
 }
 
 async function startJob(jobId: string, env: Env) {

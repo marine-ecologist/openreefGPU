@@ -95,3 +95,26 @@ Deploy the API (`cd cloud/api && npm ci && npx wrangler deploy`) and push the
 frontend changes to GitHub to publish this browser. The API dependency versions
 are pinned with their lockfile. This browsing change requires no new GPU image;
 processing Full project jobs still requires the matching `.6` worker image.
+
+
+## Large browser uploads
+
+New uploads use `uploadProtocol: "per-file"` on `POST /v1/jobs`. Job creation
+persists the manifest without creating every Google Drive upload session. The
+browser calls the returned `uploadSessionPath` with `{ "fileIndex": 0 }`, uploads
+that photo directly to Drive, and repeats for the remaining photos. Each
+session request validates the index against the stored manifest and rejects
+jobs that have already started or use an existing Drive folder. The existing
+start route still verifies every uploaded file's size before requesting a GPU.
+
+Older clients may prepare up to four upload sessions in one request; larger
+legacy requests receive an instruction to reload the updated website before
+any cloud folders are created. Deploy both the API and website for this change.
+No RunPod image update is required. Failed earlier preparations may leave
+incomplete job folders; create a new job after deployment rather than starting
+an incomplete one.
+
+The regression test uses the actual Drive adapter with mocked Google responses
+and enforces a 50-subrequest ceiling. For 1,500 photos, preparation takes 22
+subrequests and a subsequent per-photo session request takes 8 with the default
+`jobs` folder. These counts describe mocked requests, not a live upload test.
