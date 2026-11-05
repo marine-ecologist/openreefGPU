@@ -126,7 +126,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.5
 ARG OPENREEF_REF=7329fe43e3d43f605e9961c608af81e72788b475
-ARG OPENREEF_GPU_VERSION=0.6.5-gpu.7
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.8
 ARG CERES_REF=71be12da7161b567990f165e38771dc9c7e4e96b
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
@@ -176,6 +176,8 @@ RUN test -x "$(command -v colmap)" \
 RUN colmap --help >/dev/null
 
 COPY worker/ /opt/openreefgpu/worker/
+COPY scripts/diagnose-runpod.py /opt/openreefgpu/scripts/diagnose-runpod.py
+COPY versions.json /opt/openreefgpu/versions.json
 
 ENV PYTHONUNBUFFERED=1 \
     STORAGE_PROVIDER=google-drive \

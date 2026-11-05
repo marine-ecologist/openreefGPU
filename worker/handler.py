@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -798,7 +799,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     update_job(storage, job_root, job, stage="Staging source images", progress=3)
 
     try:
-        with tempfile.TemporaryDirectory(prefix=f"openreef-{job_id[:8]}-") as temporary:
+        with diagnostic_workspace(storage, job_root, job) as temporary:
             dataset = Path(temporary) / safe_dataset_name(str(job.get("name", "reef-survey")))
             source_folder = job_source_folder(job, job_root)
             expected_names = [
@@ -972,6 +973,50 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
+@contextmanager
+def diagnostic_workspace(storage: Any, job_root: str, job: dict[str, Any]):
+    """Upload failure evidence before TemporaryDirectory removes the workspace."""
+    with tempfile.TemporaryDirectory(prefix=f"openreef-{str(job['id'])[:8]}-") as temporary:
+        try:
+            yield temporary
+        except Exception as failure:
+            # Never replace the original processing exception with an upload failure.
+            try:
+                root = Path(temporary)
+                archive = root / "failure-diagnostics.tar.gz"
+                included, omitted = [], []
+                budget = 256 * 1024**2
+                with tarfile.open(archive, "w:gz") as bundle:
+                    for source in sorted(
+                        root.rglob("*"),
+                        key=lambda path: ("logs" not in path.relative_to(root).parts, str(path)),
+                    ):
+                        relative = source.relative_to(root)
+                        if source.is_symlink() or not source.is_file() or source == archive:
+                            continue
+                        if not ("logs" in relative.parts or "sparse" in relative.parts):
+                            continue
+                        size = source.stat().st_size
+                        if size > budget:
+                            omitted.append(str(relative))
+                            continue
+                        bundle.add(source, arcname=str(relative), recursive=False)
+                        included.append(str(relative))
+                        budget -= size
+                report = {"error": str(failure)[:1000], "included": included,
+                          "omitted": omitted, "checkpointComplete": False,
+                          "note": "Bounded logs/sparse models; images/database/dense files excluded."}
+                target = f"{job_root}/diagnostics"
+                storage.put_file(f"{target}/failure-diagnostics.tar.gz", archive)
+                storage.put_bytes(
+                    f"{target}/failure.json", json.dumps(report).encode(), "application/json"
+                )
+                job["diagnostics"] = {"archive": "failure-diagnostics.tar.gz", "path": target}
+            except Exception as diagnostic_error:
+                print(f"Could not retain failure diagnostics: {diagnostic_error}", flush=True)
+            raise
+
+
 def run_pipeline(
     dataset: Path, progress: Callable[[str, int], None], *, full_project: bool = False
 ) -> None:
@@ -1006,9 +1051,12 @@ def run_pipeline(
                 progress(stage, STAGE_PROGRESS[stage])
     return_code = process.wait()
     if return_code:
-        detail = (
-            "; native reconstruction tool likely aborted with SIGABRT" if return_code == 250 else ""
-        )
+        detail = {
+            245: "; possible wrapped SIGSEGV (-11); inspect native logs/backtrace to confirm",
+            250: "; possible wrapped SIGABRT (-6); inspect native logs/backtrace to confirm",
+            -11: "; pipeline terminated by SIGSEGV",
+            -6: "; pipeline terminated by SIGABRT",
+        }.get(return_code, "")
         raise RuntimeError(f"OpenReef pipeline exited with code {return_code}{detail}")
 
 
