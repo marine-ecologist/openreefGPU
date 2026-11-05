@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo 'Python 3 is required. Install Python 3 from https://www.python.org/downloads/macos/ and reopen this launcher.'
+  read -r -p 'Press Return to close.'
+  exit 1
+fi
+python3 setup.py

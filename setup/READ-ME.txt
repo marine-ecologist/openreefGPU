@@ -1,0 +1,40 @@
+OPENREEFGPU MAC SETUP — 0.6.5-gpu.8
+
+1. Keep this folder together. Double-click OpenReefGPU-Setup.command.
+   If macOS blocks it, open Terminal and run:
+   bash "$HOME/Downloads/OpenReefGPU-Setup/OpenReefGPU-Setup.command"
+
+2. Choose 1 to install the full source and Mac browser/API dependencies.
+   Installation is per-user, requires internet and Python 3.10+, and needs no sudo.
+   Node 22 is installed privately if a compatible Node is unavailable.
+   Existing Drive authorization is reused when found.
+
+3. To run the 200-image diagnostic on your current compatible worker, choose 6.
+   Paste the SSH connection command shown by RunPod. The launcher copies all
+   required Python modules and runs them remotely; nothing imports worker on the Mac.
+   Direct SSH with remote-command support is required. An interactive-only RunPod
+   SSH proxy may not support this transfer; use the worker's direct SSH connection.
+   The worker needs the pinned OpenReef/COLMAP/OpenMVS runtime already installed.
+   Normal GPU charges apply. You will see the remote results directory.
+
+4. For the entire new cloud deployment, use this order:
+   1 Install -> 2 Drive (only if needed) -> 8 Publish source -> 3 RunPod -> 4 Cloudflare.
+   GitHub/Google/Cloudflare account sign-in and RunPod endpoint configuration are
+   interactive. The launcher cannot complete those account actions unattended.
+   The image build is large; wait for the successful GitHub Actions result, then
+   select ghcr.io/marine-ecologist/openreef-gpu:0.6.5-gpu.8 on RunPod.
+   Cloudflare deployment changes your existing live API.
+   Leave active workers at 0 when finished. Activating workers incurs charges.
+
+5. Choose 5 for the local browser app, or 7 for your existing hosted app.
+
+Source and node dependencies: ~/Library/Application Support/OpenReefGPU/
+Private credentials: ~/Library/Application Support/OpenReefGPU/config/
+The downloaded bundle contains no OAuth or RunPod secrets.
+Drive photos are not changed by installation or diagnostic selection.
+
+This is the cloud frontend and deployment tooling. CUDA reconstruction runs on
+RunPod Linux, not on the Mac GPU. This setup does not install desktop OpenReef.
+
+The 200-image test was prepared but not executed during packaging. Its measured
+performance and native crash cause remain unverified.
