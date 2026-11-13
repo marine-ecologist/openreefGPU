@@ -2,6 +2,11 @@ name: Publish RunPod worker image
 
 on:
   workflow_dispatch:
+    inputs:
+      reuse_native_image:
+        description: Reuse the verified native worker image for a core/adapter-only release
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*-gpu.*'
@@ -77,7 +82,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: worker/Dockerfile
+          file: ${{ inputs.reuse_native_image && 'worker/Dockerfile.release' || 'worker/Dockerfile' }}
           platforms: linux/amd64
           push: true
           tags: |

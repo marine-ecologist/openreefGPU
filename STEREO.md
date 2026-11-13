@@ -65,6 +65,13 @@ python scripts/package-stereo-patch.py ../openreef-stereo
 node scripts/check-versions.mjs
 ```
 
+For the stereo-only release, dispatch the existing GPU Docker workflow with
+`reuse_native_image=true`. `worker/Dockerfile.release` reuses the immutable deployed
+GPU image and verifies its native dependency contract before adding the stereo
+module. Default builds still use `worker/Dockerfile` to rebuild the entire stack.
+The fast build is deliberately restricted to this stereo version and compatible
+base; use a full build for later native/core upgrades.
+
 Build with the existing GPU Docker workflow. The build checks for the rig
 configurator and fixed-sensor-pose mapper flag, and verifies the stereo module
 imports. Review/regenerate the patch when upgrading the pinned upstream release;

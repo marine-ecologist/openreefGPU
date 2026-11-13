@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7
+# Fast adapter/core-only release. The native stack is exactly the deployed gpu.8 image.
+# Use worker/Dockerfile whenever a native dependency changes.
+FROM ghcr.io/marine-ecologist/openreef-gpu@sha256:34c5fb479a3635a56189fd15855557d2c569b194143487a925d28c285b60038a
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.10
+COPY versions.json /tmp/expected-versions.json
+RUN python3 - <<'PY'
+import json
+from pathlib import Path
+current = json.loads(Path('/opt/openreefgpu/versions.json').read_text())
+expected = json.loads(Path('/tmp/expected-versions.json').read_text())
+for component in ('openreef', 'colmap', 'ceres', 'openMVS', 'cgal'):
+    assert current[component] == expected[component], f'{component} changed; use full native build'
+assert expected['openreefGPU']['version'] == '0.6.5-gpu.10'
+print('Native dependency contract matches the deployed base image')
+PY
+RUN test "$(git -C /opt/openreef rev-parse HEAD)" = "7329fe43e3d43f605e9961c608af81e72788b475" \
+    && test "$(cat /usr/local/share/openreef/COLMAP_REF)" = "68b722be23fdba964a24583720bde07675171d47" \
+    && grep -qx 'CERES_CUDA_ENABLED=ON' /usr/local/share/openreef/COLMAP_BUILD_OPTIONS \
+    && grep -qx 'CERES_CUDSS_ENABLED=ON' /usr/local/share/openreef/COLMAP_BUILD_OPTIONS
+COPY worker/patches/openreef-stereo.patch /tmp/openreef-stereo.patch
+RUN git -C /opt/openreef apply --check /tmp/openreef-stereo.patch \
+    && git -C /opt/openreef apply /tmp/openreef-stereo.patch \
+    && python3 -m pip install --break-system-packages --no-cache-dir --no-deps /opt/openreef
+RUN colmap rig_configurator --help >/dev/null \
+    && colmap mapper --help 2>&1 | grep -q 'ba_refine_sensor_from_rig'
+RUN python3 -c 'from openreef.pipeline.stereo import prepare_dataset, calibrate'
+COPY worker/ /opt/openreefgpu/worker/
+COPY scripts/diagnose-runpod.py /opt/openreefgpu/scripts/diagnose-runpod.py
+COPY versions.json /opt/openreefgpu/versions.json
+ENV OPENREEF_GPU_VERSION=${OPENREEF_GPU_VERSION}
+WORKDIR /opt/openreefgpu
+CMD ["python3", "-m", "worker.handler"]
