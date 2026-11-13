@@ -10,10 +10,11 @@ OPENREEFGPU MAC SETUP — 0.6.5-gpu.8
    Existing Drive authorization is reused when found.
 
 3. To run the 200-image diagnostic on your current compatible worker, choose 6.
+   This now reuses existing Python source without installing Node or web dependencies.
    Paste the SSH connection command shown by RunPod. The launcher copies all
    required Python modules and runs them remotely; nothing imports worker on the Mac.
-   Direct SSH with remote-command support is required. An interactive-only RunPod
-   SSH proxy may not support this transfer; use the worker's direct SSH connection.
+   The SSH proxy is supported through an interactive PTY session. The helper
+   disables credential echo and verifies the complete transfer before starting.
    The worker needs the pinned OpenReef/COLMAP/OpenMVS runtime already installed.
    Normal GPU charges apply. You will see the remote results directory.
 
@@ -38,3 +39,24 @@ RunPod Linux, not on the Mac GPU. This setup does not install desktop OpenReef.
 
 The 200-image test was prepared but not executed during packaging. Its measured
 performance and native crash cause remain unverified.
+
+SPARSE-ONLY PROFILING (after the first test)
+
+Use the newest setup.py with:
+python3 setup.py --profile-sparse
+
+Paste the SSH connection for a NEW idle worker when prompted. This runs only
+feature extraction, matching and sparse mapping, with Drive progress/checkpoints.
+The old worker connection cannot be reused after that worker was terminated.
+The earlier 248-image reference is searched for within the Drive root. Its
+original SHA-256 hashes must match; otherwise current-only profiling continues
+with the historical comparison marked unavailable. No dense/mesh/texture
+stages are run. Native profiler permission failures are recorded explicitly.
+
+THREE-WAY SPARSE OPTIMISATION
+
+python3 setup.py --benchmark-sparse
+
+Runs 200-image correctness checks before three 1,000-image sparse tests.
+Retains full source, feature, matching, mapper and final-BA stage archives in
+Drive diagnostics. See SPARSE_OPTIMISATION.md for thresholds and storage details.

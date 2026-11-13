@@ -12,7 +12,10 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 export default function Home() {
   const [showProjects, setShowProjects] = useState(false);
   useEffect(() => {
-    setShowProjects(new URLSearchParams(window.location.search).get('projects') === '1');
+    const frame = requestAnimationFrame(() => {
+      setShowProjects(new URLSearchParams(window.location.search).get('projects') === '1');
+    });
+    return () => cancelAnimationFrame(frame);
   }, []);
   return (
     <main className="app-shell">
@@ -63,7 +66,7 @@ export default function Home() {
           </span>
         </a>
 
-        <p className="sidebar-version">OpenReefGPU v0.6.5-gpu.8</p>
+        <p className="sidebar-version">OpenReefGPU v0.6.5-gpu.10</p>
       </aside>
 
       <section

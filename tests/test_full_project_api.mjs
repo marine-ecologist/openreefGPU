@@ -281,3 +281,91 @@ test('runtime discovery outages retain the default with explicitly unknown healt
     assert.ok(body.warning);
   } finally { globalThis.fetch = previous; }
 });
+
+
+test('Gaussian assets are optional, exposed and restricted to the recorded file', async () => {
+  setup();
+  const { job } = await (await create()).json();
+  const record = records.get(`${job.id}/job.json`);
+  record.state = 'completed';
+  record.result = { model: 'model.glb', manifest: 'manifest.json' };
+  const details = () => worker.fetch(new Request(`https://test/v1/jobs/${job.id}`), env);
+  assert.equal((await (await details()).json()).result.gaussianUrl, undefined);
+  record.result.gaussian = 'reef_gaussian.ply';
+  const result = (await (await details()).json()).result;
+  assert.ok(result.gaussianUrl.endsWith('/reef_gaussian.ply'));
+  globalThis.__fullProjectStorage.readFile = async (path, range) => {
+    assert.ok(path.endsWith('/output/reef_gaussian.ply'));
+    assert.equal(range, 'bytes=0-3');
+    return new Response('ply', { status: 206 });
+  };
+  assert.equal((await worker.fetch(new Request(`https://test${result.gaussianUrl}`, {
+    headers: { Range: 'bytes=0-3' },
+  }), env)).status, 206);
+  assert.equal((await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/assets/other_gaussian.ply`), env)).status, 404);
+});
+
+const rigProfile = () => ({
+  schemaVersion: 1, translationUnit: 'metres',
+  cameras: ['left', 'right'].map(id => ({ id, model: 'PINHOLE', width: 640, height: 480,
+    params: [500, 500, 320, 240] })),
+  rightFromLeft: { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation: [-0.15, 0, 0] },
+});
+const createStereo = (stereo, extra = {}) => worker.fetch(new Request('https://test/v1/jobs', {
+  method: 'POST', body: JSON.stringify({ name: 'stereo survey', stereo, ...extra }),
+}), env);
+
+test('stereo folders preserve camera identity and colliding GoPro names through submission', async () => {
+  setup();
+  globalThis.__fullProjectStorage.listRootFiles = async folder => [
+    { id: `${folder}-1`, name: 'GOPR0001.jpg', size: 5 },
+    { id: `${folder}-2`, name: 'GOPR0002.jpg', size: 5 },
+  ];
+  const response = await createStereo({ leftFolder: 'left', rightFolder: 'right', profile: rigProfile() });
+  assert.equal(response.status, 201);
+  const { job } = await response.json();
+  const record = records.get(`${job.id}/job.json`);
+  assert.deepEqual(record.files.map(f => f.cameraId), ['left', 'left', 'right', 'right']);
+  assert.equal(record.files.length, 4);
+  assert.equal(record.stereo.maxDeltaMs, 30);
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ id: 'stereo-run' });
+  try {
+    const started = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/start`, { method: 'POST' }), env);
+    assert.equal(started.status, 202);
+  } finally { globalThis.fetch = previous; }
+});
+
+test('stereo invalid calibration and conflicting sources fail before storage writes', async () => {
+  const valid = { leftFolder: 'left', rightFolder: 'right', profile: rigProfile() };
+  for (const stereo of [
+    null, {}, { ...valid, leftFolder: 'right' }, { ...valid, maxDeltaMs: -1 },
+    { ...valid, profile: { ...rigProfile(), cameras: [null, null] } },
+    { ...valid, profile: { ...rigProfile(), translationUnit: 'millimetres' } },
+    { ...valid, profile: { ...rigProfile(), rightFromLeft: {
+      rotation: [[-1, 0, 0], [0, 1, 0], [0, 0, 1]], translation: [-.15, 0, 0] } } },
+  ]) {
+    setup();
+    assert.equal((await createStereo(stereo)).status, 400);
+    assert.equal(records.size, 0);
+  }
+  assert.equal((await createStereo(valid, { sourceFolder: 'images' })).status, 400);
+});
+
+test('stereo diagnostics downloads are restricted to recorded artifacts', async () => {
+  setup();
+  const { job } = await (await create()).json();
+  const record = records.get(`${job.id}/job.json`);
+  record.state = 'completed';
+  record.result = { model: 'model.glb', manifest: 'manifest.json',
+    stereo_diagnostics: 'diagnostics.json', rig_profile: 'profile.json' };
+  const details = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}`), env);
+  const result = (await details.json()).result;
+  assert.ok(result.stereoDiagnosticsUrl.endsWith('/diagnostics.json'));
+  assert.ok(result.rigProfileUrl.endsWith('/profile.json'));
+  globalThis.__fullProjectStorage.readFile = async path => {
+    assert.ok(path.endsWith('/output/profile.json')); return Response.json(rigProfile());
+  };
+  assert.equal((await worker.fetch(new Request(`https://test${result.rigProfileUrl}`), env)).status, 200);
+  assert.equal((await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/assets/other-profile.json`), env)).status, 404);
+});

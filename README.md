@@ -10,6 +10,8 @@ Browser → Google Drive → Cloudflare API → RunPod GPU
         → pinned OpenReef pipeline → GLB → browser viewer
 ```
 
+See [Gaussian viewer](GAUSSIAN_VIEWER.md) for optional cloud splat rendering and compatible output paths.
+
 ## Live deployment
 
 - Browser: <https://marine-ecologist.github.io/openreefGPU/>
@@ -31,7 +33,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.5-gpu.5`, based on OpenReef `0.6.5`. The suffix may advance for
+The current cloud release is `0.6.5-gpu.9`, based on OpenReef `0.6.5`. The suffix may advance for
 cloud-only changes (`gpu.4`, `gpu.5`, `gpu.6`) without pretending the desktop pipeline changed.
 
 ## Version contract
@@ -159,3 +161,5 @@ Personal Google Drive is the initial provider. A new app-created folder uses the
 scope. Reusing a pre-existing dedicated folder such as `reefplot` requires Drive scope; the API and
 worker remain rooted to that folder ID. The existing SharePoint adapter remains available for later
 organisational deployment.
+
+Stereo integration: see [STEREO.md](STEREO.md) for dual-camera jobs, calibration and worker rollout.

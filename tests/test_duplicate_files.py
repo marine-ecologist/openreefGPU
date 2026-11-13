@@ -1,5 +1,7 @@
 """Source identity and duplicate filename regression tests."""
+
 import unittest
+
 from worker.handler import select_expected_files
 
 
@@ -10,8 +12,20 @@ class DuplicateFilesTests(unittest.TestCase):
             {"id": "a", "name": "same.jpg", "size": 10, "md5Checksum": "aaa"},
         ]
         manifest = [
-            {"sourceId": "a", "sourceName": "same.jpg", "sourceMd5": "aaa", "size": 10, "name": "same.jpg"},
-            {"sourceId": "b", "sourceName": "same.jpg", "sourceMd5": "bbb", "size": 10, "name": "same__2.jpg"},
+            {
+                "sourceId": "a",
+                "sourceName": "same.jpg",
+                "sourceMd5": "aaa",
+                "size": 10,
+                "name": "same.jpg",
+            },
+            {
+                "sourceId": "b",
+                "sourceName": "same.jpg",
+                "sourceMd5": "bbb",
+                "size": 10,
+                "name": "same__2.jpg",
+            },
         ]
         chosen = select_expected_files(items, manifest)
         self.assertEqual([file["id"] for file in chosen], ["a", "b"])
@@ -32,7 +46,9 @@ class DuplicateFilesTests(unittest.TestCase):
         self.assertEqual(select_expected_files(items, ["same.jpg"])[0]["id"], "a")
         for checksum in ("bbb", None):
             with self.assertRaisesRegex(RuntimeError, "Ambiguous duplicate"):
-                select_expected_files([items[0], {**items[1], "md5Checksum": checksum}], ["same.jpg"])
+                select_expected_files(
+                    [items[0], {**items[1], "md5Checksum": checksum}], ["same.jpg"]
+                )
 
     def test_unverified_content_does_not_reuse_identity_cache(self):
         items = [{"id": "a", "name": "same.jpg", "size": 10}]

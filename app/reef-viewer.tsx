@@ -23,6 +23,7 @@ import { FlowController, type FlowViewerOptions } from './flow/FlowController';
 
 type ViewId = 'textured' | 'sparse' | 'dense';
 type DisplayMode =
+  | 'gaussian'
   | 'solid'
   | 'wireframe'
   | 'solid-wire'
@@ -84,7 +85,12 @@ const views: Array<{
   { id: 'dense', step: '03', title: 'Dense + mesh', detail: '1 px points' },
 ];
 
-type CloudModel = { url: string; label: string; source: string };
+type CloudModel = {
+  gaussianUrl?: string;
+  url: string;
+  label: string;
+  source: string;
+};
 
 export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -192,6 +198,11 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
     const timer = new THREE.Timer();
     timer.connect(document);
 
+    let splat: import('@sparkjsdev/spark').SplatMesh | null = null;
+    let spark: import('@sparkjsdev/spark').SparkRenderer | null = null;
+    let splatLoading = false;
+    let modelReady = false;
+
     const resize = () => {
       const width = viewport.clientWidth;
       const height = viewport.clientHeight;
@@ -201,7 +212,10 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
     };
 
     const fit = () => {
-      const box = new THREE.Box3().setFromObject(root);
+      const box =
+        currentMode === 'gaussian' && splat
+          ? splat.getBoundingBox()
+          : new THREE.Box3().setFromObject(root);
       if (box.isEmpty()) return;
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
@@ -230,9 +244,102 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
 
     const applyDisplayMode = (mode: DisplayMode) => {
       currentMode = mode;
+      if (splat) {
+        splat.visible = mode === 'gaussian';
+        if (mode === 'gaussian') {
+          fit();
+          setStatus(
+            `${new Intl.NumberFormat().format(splat.numSplats)} Gaussian splats`,
+          );
+        }
+      }
+      if (
+        mode === 'gaussian' &&
+        !splat &&
+        !splatLoading &&
+        cloudModel?.gaussianUrl
+      ) {
+        splatLoading = true;
+        setLoading(true);
+        setProgress(0);
+        setStatus('Loading Gaussian splats…');
+        void (async () => {
+          let candidate: import('@sparkjsdev/spark').SplatMesh | null = null;
+          try {
+            const { SparkRenderer, SplatMesh } =
+              await import('@sparkjsdev/spark');
+            if (disposed) return;
+            spark = new SparkRenderer({ renderer });
+            scene.add(spark);
+            candidate = new SplatMesh({
+              url: cloudModel.gaussianUrl,
+              withCredentials: true,
+              onProgress: (event) => {
+                if (!disposed && currentMode === 'gaussian' && event.total) {
+                  setProgress(
+                    Math.min(
+                      99,
+                      Math.round((event.loaded / event.total) * 100),
+                    ),
+                  );
+                }
+              },
+            });
+            await candidate.initialized;
+            if (disposed) {
+              candidate.dispose();
+              return;
+            }
+            if (!candidate.numSplats) throw new Error('Empty Gaussian output');
+            splat = candidate;
+            scene.add(splat);
+            splat.visible = currentMode === 'gaussian';
+            if (currentMode === 'gaussian') {
+              fit();
+              meshes.forEach((mesh) => {
+                mesh.visible = false;
+              });
+              points.forEach((point) => {
+                point.visible = false;
+              });
+              setStatus(
+                `${new Intl.NumberFormat().format(splat.numSplats)} Gaussian splats`,
+              );
+            }
+          } catch (reason) {
+            candidate?.dispose();
+            if (!disposed) {
+              spark?.removeFromParent();
+              spark?.dispose();
+              spark = null;
+            }
+            if (!disposed && currentMode === 'gaussian') {
+              displayModeRef.current = 'solid';
+              setDisplayMode('solid');
+              applyDisplayMode('solid');
+              setStatus(
+                'Gaussian rendering unavailable · showing textured mesh',
+              );
+              console.warn('Gaussian loading failed', reason);
+            }
+          } finally {
+            splatLoading = false;
+            if (!disposed) {
+              setLoading(false);
+              setProgress(100);
+            }
+          }
+        })();
+      } else if (mode !== 'gaussian') {
+        setLoading(!modelReady);
+        if (splat) {
+          fit();
+          setStatus('Textured mesh · compact web assets');
+        }
+      }
       clearEdges();
       meshes.forEach((mesh) => {
-        mesh.visible = mode !== 'points';
+        mesh.visible = mode !== 'points' && (mode !== 'gaussian' || !splat);
         const materials = Array.isArray(mesh.material)
           ? mesh.material
           : [mesh.material];
@@ -340,12 +447,22 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
 
     const ready = () => {
       if (disposed) return;
+      modelReady = true;
       collectObjects();
       fit();
       const count = new Intl.NumberFormat().format(countVertices());
-      setStatus(`${count} vertices · compact web assets`);
-      setProgress(100);
-      setLoading(false);
+      if (currentMode === 'gaussian') {
+        setStatus(
+          splat
+            ? `${new Intl.NumberFormat().format(splat.numSplats)} Gaussian splats`
+            : 'Loading Gaussian splats…',
+        );
+        setLoading(splatLoading);
+      } else {
+        setStatus(`${count} vertices · compact web assets`);
+        setProgress(100);
+        setLoading(false);
+      }
     };
 
     const fail = (reason: unknown) => {
@@ -452,6 +569,18 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
       new GLTFLoader().load(
         cloudModel.url,
         (gltf) => {
+          if (disposed) {
+            gltf.scene.traverse((object) => {
+              const mesh = object as THREE.Mesh;
+              mesh.geometry?.dispose();
+              if (mesh.material)
+                (Array.isArray(mesh.material)
+                  ? mesh.material
+                  : [mesh.material]
+                ).forEach(disposeMaterial);
+            });
+            return;
+          }
           root.add(gltf.scene);
           ready();
         },
@@ -462,6 +591,18 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
       new GLTFLoader().load(
         asset('scene_mesh_compact_textured.glb'),
         (gltf) => {
+          if (disposed) {
+            gltf.scene.traverse((object) => {
+              const mesh = object as THREE.Mesh;
+              mesh.geometry?.dispose();
+              if (mesh.material)
+                (Array.isArray(mesh.material)
+                  ? mesh.material
+                  : [mesh.material]
+                ).forEach(disposeMaterial);
+            });
+            return;
+          }
           root.add(gltf.scene);
           ready();
         },
@@ -560,7 +701,22 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
       const delta = timer.getDelta();
       flowController?.update(delta, timer.getElapsed());
       controls.update();
-      renderer.render(scene, camera);
+      try {
+        renderer.render(scene, camera);
+      } catch (reason) {
+        if (currentMode !== 'gaussian') throw reason;
+        splat?.removeFromParent();
+        splat?.dispose();
+        splat = null;
+        spark?.removeFromParent();
+        spark?.dispose();
+        spark = null;
+        displayModeRef.current = 'solid';
+        setDisplayMode('solid');
+        applyDisplayMode('solid');
+        setStatus('Gaussian rendering unavailable · showing textured mesh');
+        console.warn('Gaussian rendering failed', reason);
+      }
     });
 
     return () => {
@@ -570,6 +726,10 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
       timer.dispose();
       controls.dispose();
       flowController?.dispose();
+      splat?.removeFromParent();
+      splat?.dispose();
+      spark?.removeFromParent();
+      spark?.dispose();
       clearRoot();
       renderer.dispose();
       renderer.domElement.remove();
@@ -713,6 +873,13 @@ export function ReefViewer({ cloudModel }: { cloudModel?: CloudModel }) {
             <option value="solid-wire">Solid + wireframe</option>
           )}
           <option value="points">Points</option>
+          {cloudModel && (
+            <option value="gaussian" disabled={!cloudModel.gaussianUrl}>
+              {cloudModel.gaussianUrl
+                ? 'Gaussian splats'
+                : 'Gaussian splats (not available)'}
+            </option>
+          )}
         </select>
 
         {showPointSize && (

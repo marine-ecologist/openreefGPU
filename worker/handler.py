@@ -884,12 +884,15 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                         progress=3,
                     )
 
-            image_count = storage.download_folder(
-                source_folder,
-                dataset / "images",
-                expected_names,
-                report_source_transfer,
-            )
+            if job.get("stereo"):
+                image_count = stage_stereo_source(storage, job, dataset, report_source_transfer)
+            else:
+                image_count = storage.download_folder(
+                    source_folder,
+                    dataset / "images",
+                    expected_names,
+                    report_source_transfer,
+                )
             start_timing_step(job, "Preparing source images")
             update_job(
                 storage,
@@ -907,6 +910,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 dataset,
                 report_pipeline_stage,
                 full_project=output_mode == "full",
+                **({"stereo": True} if job.get("stereo") else {}),
             )
 
             artifacts = select_result_artifacts(dataset)
@@ -946,6 +950,11 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
             model_name = next(item["name"] for item in uploaded if item["role"] == "model")
             job["state"] = "completed"
             job["result"] = {"model": model_name, "manifest": "manifest.json"}
+            if "gaussian" in artifacts:
+                job["result"]["gaussian"] = result_file_name("gaussian", artifacts["gaussian"])
+            for role in ("stereo_diagnostics", "rig_profile", "stereo_matching"):
+                if role in artifacts:
+                    job["result"][role] = result_file_name(role, artifacts[role])
             if "project" in artifacts:
                 job["result"]["project"] = result_file_name("project", artifacts["project"])
             complete_timings(job, "completed")
@@ -1003,9 +1012,13 @@ def diagnostic_workspace(storage: Any, job_root: str, job: dict[str, Any]):
                         bundle.add(source, arcname=str(relative), recursive=False)
                         included.append(str(relative))
                         budget -= size
-                report = {"error": str(failure)[:1000], "included": included,
-                          "omitted": omitted, "checkpointComplete": False,
-                          "note": "Bounded logs/sparse models; images/database/dense files excluded."}
+                report = {
+                    "error": str(failure)[:1000],
+                    "included": included,
+                    "omitted": omitted,
+                    "checkpointComplete": False,
+                    "note": "Bounded logs/sparse models; images/database/dense files excluded.",
+                }
                 target = f"{job_root}/diagnostics"
                 storage.put_file(f"{target}/failure-diagnostics.tar.gz", archive)
                 storage.put_bytes(
@@ -1017,16 +1030,83 @@ def diagnostic_workspace(storage: Any, job_root: str, job: dict[str, Any]):
             raise
 
 
+def stage_stereo_source(storage: Any, job: dict, dataset: Path, report: Callable) -> int:
+    """Download cameras independently, preserving colliding GoPro filenames and identity."""
+    from openreef.pipeline.stereo import prepare_dataset, validate_profile
+
+    config = job["stereo"]
+    profile = validate_profile(config["profile"])
+    files = job.get("files", [])
+    if any(item.get("cameraId") not in {c["id"] for c in profile["cameras"]} for item in files):
+        raise ValueError("Every stereo source file must have a calibrated camera identity")
+    completed = total_bytes = cache_hits = count = 0
+    expected_bytes = sum(int(item.get("size", 0)) for item in files)
+    folders = []
+    for camera, key in zip(profile["cameras"], ("leftFolder", "rightFolder"), strict=True):
+        selected = [item for item in files if item.get("cameraId") == camera["id"]]
+        if len(selected) < 2:
+            raise ValueError("Each stereo camera requires at least two photographs")
+        target = dataset.parent / ("source-" + camera["id"])
+        folders.append(target)
+        last_hits = [0]
+
+        def camera_progress(
+            done,
+            total,
+            downloaded,
+            size,
+            name,
+            hits,
+            base_files=completed,
+            base_bytes=total_bytes,
+            base_hits=cache_hits,
+            seen_hits=last_hits,
+        ):
+            seen_hits[0] = hits
+            report(
+                base_files + done,
+                len(files),
+                base_bytes + downloaded,
+                expected_bytes,
+                name,
+                base_hits + hits,
+            )
+
+        count += storage.download_folder(config[key], target, selected, camera_progress)
+        completed += len(selected)
+        total_bytes += sum(int(item.get("size", 0)) for item in selected)
+        cache_hits += last_hits[0]
+    prepare_dataset(
+        *folders,
+        dataset,
+        profile,
+        config.get("maxDeltaMs", 30),
+        config.get("rightOffsetMs", 0),
+        config.get("timestamps"),
+        config.get("overlap", 10),
+        config.get("loopInterval", 50),
+        config.get("loopNeighbors", 5),
+    )
+    return count
+
+
 def run_pipeline(
-    dataset: Path, progress: Callable[[str, int], None], *, full_project: bool = False
+    dataset: Path,
+    progress: Callable[[str, int], None],
+    *,
+    full_project: bool = False,
+    stereo: bool = False,
 ) -> None:
     command = pipeline_command(dataset, full_project=full_project)
+    if stereo:
+        command.append("--stereo")
     log_dir = dataset / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     cores = pipeline_core_count()
     backend = os.environ.get("OPENREEF_BA_BACKEND", "ceres").strip().lower()
     print(
-        f"Starting OpenReef {'full project' if full_project else 'compact'} pipeline with {cores} CPU threads "
+        f"Starting OpenReef {'full project' if full_project else 'compact'} pipeline "
+        f"with {cores} CPU threads "
         f"and {backend.upper()} bundle adjustment",
         flush=True,
     )
@@ -1065,14 +1145,10 @@ def pipeline_command(dataset: Path, *, full_project: bool = False) -> list[str]:
     cores = pipeline_core_count()
     backend = os.environ.get("OPENREEF_BA_BACKEND", "ceres").strip().lower()
     if backend not in {"ceres", "caspar"}:
-        raise WorkerConfigurationError(
-            "OPENREEF_BA_BACKEND must be either 'ceres' or 'caspar'"
-        )
+        raise WorkerConfigurationError("OPENREEF_BA_BACKEND must be either 'ceres' or 'caspar'")
     ceres_gpu_value = os.environ.get("OPENREEF_CERES_USE_GPU", "1").strip().lower()
     if ceres_gpu_value not in {"0", "1", "false", "true", "no", "yes"}:
-        raise WorkerConfigurationError(
-            "OPENREEF_CERES_USE_GPU must be true/false or 1/0"
-        )
+        raise WorkerConfigurationError("OPENREEF_CERES_USE_GPU must be true/false or 1/0")
     ceres_gpu = ceres_gpu_value in {"1", "true", "yes"}
     gpu_index = os.environ.get("OPENREEF_BA_GPU_INDEX", "-1").strip()
     try:
@@ -1136,6 +1212,21 @@ def select_result_artifacts(dataset: Path) -> dict[str, Path]:
     sparse_candidates = sorted((dataset / "models").glob("*_sparse_cloud_compact.ply"))
     if sparse_candidates:
         artifacts["sparse"] = sparse_candidates[0]
+    # Match OpenReef dataset_label; prefer the canonical output over its models alias.
+    label = "_".join(dataset.name.strip().split()) or "openreef"
+    for folder in ("gaussian", "models"):
+        splat = dataset / folder / f"{label}_gaussian.ply"
+        if splat.is_file():
+            artifacts["gaussian"] = splat
+            break
+    for role, name in (
+        ("stereo_diagnostics", "diagnostics.json"),
+        ("rig_profile", "profile.json"),
+        ("stereo_matching", "match-diagnostics.json"),
+    ):
+        path = dataset / "stereo" / name
+        if path.is_file():
+            artifacts[role] = path
     return artifacts
 
 
@@ -1165,7 +1256,8 @@ def archive_project(dataset: Path, job: dict[str, Any], include_source_images: b
         "createdAt": utc_now(),
         "sourceImagesIncluded": include_source_images,
         "sourceFiles": job.get("files", []),
-        "pipelineCommand": pipeline_command(dataset, full_project=True),
+        "pipelineCommand": pipeline_command(dataset, full_project=True)
+        + (["--stereo"] if job.get("stereo") else []),
     }
     (dataset / "cloud-run.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (dataset / "CLOUD_PROJECT_README.txt").write_text(
@@ -1173,8 +1265,12 @@ def archive_project(dataset: Path, job: dict[str, Any], include_source_images: b
         "All generated COLMAP/OpenMVS files and original outputs are retained.\n"
         "Resolution caps are unchanged from this cloud run; original output does not mean "
         "uncapped photo resolution.\n"
-        + ("Original photographs are included in images/.\n" if include_source_images else
-           "Copy the source photographs listed in cloud-run.json into images/ before resuming.\n")
+        + (
+            "Original photographs are included in images/.\n"
+            if include_source_images
+            else "Copy the source photographs listed in cloud-run.json "
+            "into images/ before resuming.\n"
+        )
         + "Native scene files may contain worker-specific absolute paths. If needed, "
         "regenerate undistortion/OpenMVS import locally against the extracted dataset.\n"
     )
@@ -1193,7 +1289,9 @@ def archive_project(dataset: Path, job: dict[str, Any], include_source_images: b
             size += path.stat().st_size
         entries.append(path)
     if size + 64 * 1024**2 > shutil.disk_usage(dataset.parent).free:
-        raise RuntimeError("Insufficient temporary disk to archive the full project; increase worker disk")
+        raise RuntimeError(
+            "Insufficient temporary disk to archive the full project; increase worker disk"
+        )
     output = dataset.parent / "full-project.tar.gz"
     with tarfile.open(output, "w:gz", compresslevel=1) as archive:
         archive.add(dataset, arcname=dataset.name, recursive=False)
@@ -1414,22 +1512,36 @@ def select_expected_files(
                 or item.get("name") != expected.get("sourceName")
                 or (checksum and str(item.get("md5Checksum") or "").lower() != checksum)
             ):
-                raise RuntimeError(f"Cloud source file changed since submission: {expected['name']}")
+                raise RuntimeError(
+                    f"Cloud source file changed since submission: {expected['name']}"
+                )
             identity = hashlib.sha256(
                 f"{item['id']}:{checksum}:{expected['size']}".encode()
             ).hexdigest()[:24]
             chosen = {
-                **item, "name": expected["name"], "_source_identity": identity,
+                **item,
+                "name": expected["name"],
+                "_source_identity": identity,
                 "_disable_source_cache": not checksum,
             }
         else:
-            matches = [item for item in items if str(item.get("name", "")).casefold() == expected.casefold()]
+            matches = [
+                item
+                for item in items
+                if str(item.get("name", "")).casefold() == expected.casefold()
+            ]
             if not matches:
                 raise RuntimeError("Cloud source folder is missing expected file(s)")
             if len(matches) > 1:
-                identities = {(str(item.get("md5Checksum") or "").lower(), int(item.get("size") or 0)) for item in matches}
+                identities = {
+                    (str(item.get("md5Checksum") or "").lower(), int(item.get("size") or 0))
+                    for item in matches
+                }
                 if len(identities) != 1 or not next(iter(identities))[0]:
-                    raise RuntimeError(f"Ambiguous duplicate filename: {expected}; submit a new job to retain both files")
+                    raise RuntimeError(
+                        f"Ambiguous duplicate filename: {expected}; "
+                        "submit a new job to retain both files"
+                    )
             chosen = min(matches, key=lambda item: str(item.get("id", "")))
         name = safe_file_name(str(chosen["name"]))
         if name.casefold() in names:

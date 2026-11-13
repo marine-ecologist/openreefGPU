@@ -126,7 +126,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.5
 ARG OPENREEF_REF=7329fe43e3d43f605e9961c608af81e72788b475
-ARG OPENREEF_GPU_VERSION=0.6.5-gpu.8
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.10
 ARG CERES_REF=71be12da7161b567990f165e38771dc9c7e4e96b
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
@@ -158,6 +158,9 @@ RUN git init /opt/openreef \
     && git -C /opt/openreef fetch --depth 1 origin "${OPENREEF_REF}" \
     && git -C /opt/openreef checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/openreef rev-parse HEAD)" = "${OPENREEF_REF}"
+COPY worker/patches/openreef-stereo.patch /tmp/openreef-stereo.patch
+RUN git -C /opt/openreef apply --check /tmp/openreef-stereo.patch \
+    && git -C /opt/openreef apply /tmp/openreef-stereo.patch
 RUN python3 -m pip install --break-system-packages --no-cache-dir --no-deps /opt/openreef
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
       runpod==1.7.13 numpy==2.2.6 Pillow==11.3.0 opencv-python-headless==4.12.0.88
@@ -173,7 +176,10 @@ RUN ldconfig \
 RUN test -x "$(command -v colmap)" \
     && ldd "$(command -v colmap)" \
     && ! ldd "$(command -v colmap)" | grep -q 'not found'
-RUN colmap --help >/dev/null
+RUN colmap --help >/dev/null \
+    && colmap rig_configurator --help >/dev/null \
+    && colmap mapper --help 2>&1 | grep -q 'ba_refine_sensor_from_rig'
+RUN python3 -c 'from openreef.pipeline.stereo import prepare_dataset, calibrate'
 
 COPY worker/ /opt/openreefgpu/worker/
 COPY scripts/diagnose-runpod.py /opt/openreefgpu/scripts/diagnose-runpod.py

@@ -1,0 +1,834 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index 938cbaf..4367c66 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -35,6 +35,7 @@ dev = [
+ 
+ [project.scripts]
+ openreef = "openreef.app:main"
++openreef-stereo = "openreef.pipeline.stereo:main"
+ openreef-pipeline = "openreef.pipeline.cli:main"
+ openreef-tiles = "openreef.tile_builder:main"
+ 
+diff --git a/src/openreef/pipeline/cli.py b/src/openreef/pipeline/cli.py
+index ad208b9..ee4ab7d 100644
+--- a/src/openreef/pipeline/cli.py
++++ b/src/openreef/pipeline/cli.py
+@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
+         default=-1,
+         help="CUDA device for bundle adjustment; -1 lets COLMAP choose",
+     )
++    parser.add_argument("--stereo", action="store_true", help="Use the prepared stereo rig")
+     parser.add_argument("--camera-model", default="SIMPLE_RADIAL")
+     parser.add_argument("--single-camera", action=argparse.BooleanOptionalAction, default=True)
+     parser.add_argument("--max-image-size", type=int, default=3200)
+@@ -167,6 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
+ 
+ def run_pipeline(args: argparse.Namespace) -> int:
+     layout = DatasetLayout.from_path(args.dataset)
++    prepared_stereo = (layout.root / "stereo" / "profile.json").is_file()
++    if args.stereo != prepared_stereo:
++        print(
++            "ERROR: --stereo requires a prepared stereo dataset; prepared rigs require --stereo",
++            file=sys.stderr,
++        )
++        return 2
+     options = PipelineOptions(
+         cores=args.cores,
+         memory_gb=args.memory_gb,
+@@ -176,6 +184,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
+         bundle_adjustment_gpu_index=args.bundle_adjustment_gpu_index,
+         camera_model=args.camera_model,
+         single_camera=args.single_camera,
++        stereo=args.stereo,
+         max_image_size=args.max_image_size,
+         sequential_overlap=args.sequential_overlap,
+         marker_tag_family=args.marker_tag_family,
+diff --git a/src/openreef/pipeline/stages.py b/src/openreef/pipeline/stages.py
+index 597064d..4efdd99 100644
+--- a/src/openreef/pipeline/stages.py
++++ b/src/openreef/pipeline/stages.py
+@@ -9,7 +9,7 @@ import shutil
+ import sqlite3
+ import struct
+ import sys
+-from dataclasses import dataclass
++from dataclasses import dataclass, replace
+ from enum import Enum
+ from pathlib import Path
+ 
+@@ -93,6 +93,7 @@ class PipelineOptions:
+     bundle_adjustment_gpu_index: int = -1
+     camera_model: str = "SIMPLE_RADIAL"
+     single_camera: bool = True
++    stereo: bool = False
+     max_image_size: int = 3200
+     undistort_max_image_size: int | None = None
+     sequential_overlap: int = 10
+@@ -808,6 +809,12 @@ def stage_output_exists(
+     layout: DatasetLayout,
+     options: PipelineOptions | None = None,
+ ) -> bool:
++    if (layout.root / "stereo" / "profile.json").is_file() and stage in {
++        StageKey.FEATURES, StageKey.MATCHING
++    }:
++        from openreef.pipeline.stereo import stereo_stage_complete
++        if not stereo_stage_complete(layout.root, stage.value):
++            return False
+     if stage == StageKey.FEATURES:
+         return _database_table_has_rows(layout.database, "keypoints")
+     if stage == StageKey.MATCHING:
+@@ -1076,9 +1083,39 @@ def build_stage_command(
+     layout: DatasetLayout,
+     options: PipelineOptions,
+ ) -> StageCommand:
++    if (layout.root / "stereo" / "profile.json").is_file() and not options.stereo:
++        options = replace(options, stereo=True)
+     validate_stage(stage, layout, options)
+     layout.prepare_directories()
+ 
++    if options.stereo and stage in {StageKey.FEATURES, StageKey.MATCHING}:
++        profile = layout.root / "stereo" / "profile.json"
++        if not profile.is_file():
++            raise StageConfigurationError("Prepare the stereo dataset and rig profile first")
++        matching_gpu = (
++            options.use_gpu if options.matching_use_gpu is None else options.matching_use_gpu
++        )
++        return StageCommand(
++            sys.executable,
++            (
++                "-m",
++                "openreef.pipeline.stereo",
++                "stage",
++                "--stage",
++                stage.value,
++                "--dataset",
++                str(layout.root),
++                "--executable",
++                resolve_executable("colmap"),
++                "--cores",
++                str(options.cores),
++                "--gpu",
++                _flag(options.use_gpu if stage == StageKey.FEATURES else matching_gpu),
++                "--max-image-size",
++                str(options.max_image_size),
++            ),
++            layout.root,
++        )
+     if stage == StageKey.FEATURES:
+         return _colmap(
+             layout,
+@@ -1134,6 +1171,7 @@ def build_stage_command(
+                 str(layout.sparse),
+                 "--cores",
+                 str(options.cores),
++                *(("--stereo",) if options.stereo else ()),
+                 "--ba-backend",
+                 options.bundle_adjustment_backend.lower(),
+                 "--ceres-use-gpu",
+diff --git a/src/openreef/pipeline/tasks.py b/src/openreef/pipeline/tasks.py
+index e638bc5..934db5e 100644
+--- a/src/openreef/pipeline/tasks.py
++++ b/src/openreef/pipeline/tasks.py
+@@ -32,6 +32,19 @@ def sparse_colmap(args: argparse.Namespace) -> int:
+         "--Mapper.num_threads",
+         str(args.cores),
+     ]
++    if getattr(args, "stereo", False):
++        command.extend(
++            (
++                "--Mapper.ba_refine_sensor_from_rig",
++                "0",
++                "--Mapper.ba_refine_focal_length",
++                "0",
++                "--Mapper.ba_refine_principal_point",
++                "0",
++                "--Mapper.ba_refine_extra_params",
++                "0",
++            )
++        )
+     if args.ba_backend == "caspar":
+         command.extend(
+             (
+@@ -801,6 +814,7 @@ def main() -> int:
+     sparse.add_argument("--images", required=True)
+     sparse.add_argument("--output", required=True)
+     sparse.add_argument("--cores", type=int, required=True)
++    sparse.add_argument("--stereo", action="store_true")
+     sparse.add_argument("--ba-backend", choices=("ceres", "caspar"), default="ceres")
+     sparse.add_argument("--ceres-use-gpu", type=int, choices=(0, 1), default=0)
+     sparse.add_argument("--ba-gpu-index", type=int, default=-1)
+diff --git a/src/openreef/pipeline/stereo.py b/src/openreef/pipeline/stereo.py
+new file mode 100644
+index 0000000..819fbe3
+--- /dev/null
++++ b/src/openreef/pipeline/stereo.py
+@@ -0,0 +1,668 @@
++"""Timestamp pairing, reusable metric calibration, and COLMAP stereo rig preparation."""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import math
++import shutil
++import sqlite3
++import subprocess
++from dataclasses import dataclass
++from datetime import datetime
++from pathlib import Path
++
++IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
++
++
++@dataclass(frozen=True)
++class Capture:
++    path: Path
++    timestamp: float
++
++
++def finite(value: object, label: str) -> float:
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        raise ValueError(f"{label} must be a finite number")
++    result = float(value)
++    if not math.isfinite(result):
++        raise ValueError(f"{label} must be a finite number")
++    return result
++
++
++def validate_profile(profile: dict, *, extrinsics: bool = True) -> dict:
++    """Validate the portable profile; translation is right_from_left, in metres."""
++    import numpy as np
++
++    if not isinstance(profile, dict) or profile.get("schemaVersion") != 1:
++        raise ValueError("Stereo profile schemaVersion must be 1")
++    cameras = profile.get("cameras")
++    if not isinstance(cameras, list) or len(cameras) != 2:
++        raise ValueError("A stereo profile needs exactly two cameras")
++    ids = []
++    for camera in cameras:
++        identity = camera.get("id", "")
++        if (
++            not isinstance(identity, str)
++            or not identity
++            or not all(c.isascii() and (c.isalnum() or c in "_-") for c in identity)
++        ):
++            raise ValueError("Camera IDs must contain only ASCII letters, digits, _ or -")
++        ids.append(identity)
++        counts = {"PINHOLE": 4, "OPENCV": 8, "OPENCV_FISHEYE": 8}
++        if camera.get("model") not in counts:
++            raise ValueError(
++                "Stereo supports calibrated PINHOLE, OPENCV and OPENCV_FISHEYE intrinsics"
++            )
++        params = camera.get("params", [])
++        if not isinstance(params, list) or len(params) != counts[camera["model"]]:
++            raise ValueError("Invalid camera parameter count")
++        values = [finite(p, "Camera parameter") for p in params]
++        for key in ("width", "height"):
++            if type(camera.get(key)) is not int or camera[key] < 1:
++                raise ValueError("Camera dimensions must be positive integers")
++        if min(values[:2]) <= 0:
++            raise ValueError("Focal lengths must be positive")
++    if ids[0] == ids[1]:
++        raise ValueError("Camera identities must differ")
++    if extrinsics:
++        if profile.get("translationUnit") != "metres":
++            raise ValueError("Rig translationUnit must be metres")
++        pose = profile.get("rightFromLeft", {})
++        rotation = np.asarray(pose.get("rotation", []), dtype=float)
++        translation = np.asarray(pose.get("translation", []), dtype=float)
++        if rotation.shape != (3, 3) or translation.shape != (3,):
++            raise ValueError("Rig pose needs a 3x3 rotation and a 3-vector translation")
++        if not np.isfinite(rotation).all() or not np.isfinite(translation).all():
++            raise ValueError("Rig pose must be finite")
++        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5) or not np.isclose(
++            np.linalg.det(rotation), 1, atol=1e-5
++        ):
++            raise ValueError("Rig rotation must be a proper rotation matrix")
++        if np.linalg.norm(translation) < 1e-6:
++            raise ValueError("Rig baseline must be nonzero")
++    return profile
++
++
++def read_captures(folder: Path, timestamps: dict[str, float] | None = None) -> list[Capture]:
++    """Use capture EXIF, including subseconds; never infer timing from file order/mtime."""
++    from PIL import Image
++
++    captures = []
++    for path in sorted(folder.iterdir()):
++        if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES:
++            continue
++        if timestamps is not None:
++            if path.name not in timestamps:
++                raise ValueError(f"Missing timestamp for {path.name}")
++            timestamp = finite(timestamps[path.name], f"Timestamp for {path.name}")
++        else:
++            with Image.open(path) as image:
++                exif = image.getexif()
++                details = exif.get_ifd(34665) if 34665 in exif else {}
++                date = details.get(36867, exif.get(36867))
++                subsec = str(details.get(37521, exif.get(37521, ""))).strip()
++                offset = details.get(36881, exif.get(36881))
++            if not date:
++                raise ValueError(f"{path.name}: missing DateTimeOriginal; supply timestamps JSON")
++            date = str(date).strip().replace(":", "-", 2).replace(" ", "T")
++            if subsec:
++                if not subsec.isdigit():
++                    raise ValueError(f"{path.name}: invalid EXIF subseconds")
++                date += "." + subsec
++            # Naive camera clocks share a neutral epoch. Offset is explicit, never host TZ.
++            date += str(offset) if offset else "+00:00"
++            timestamp = datetime.fromisoformat(date).timestamp()
++        captures.append(Capture(path, timestamp))
++    if not captures:
++        raise ValueError(f"No source images in {folder}")
++    captures.sort(key=lambda capture: (capture.timestamp, capture.path.name))
++    if len({c.timestamp for c in captures}) != len(captures):
++        raise ValueError(
++            f"Ambiguous duplicate capture timestamps in {folder}; supply precise timing"
++        )
++    return captures
++
++
++def pair_captures(
++    left: list[Capture], right: list[Capture], max_delta_ms: float = 30, right_offset_ms: float = 0
++) -> tuple[list[tuple[Capture, Capture]], dict]:
++    """Monotonic nearest-neighbour pairing; missing exposures remain single-sensor frames."""
++    tolerance = finite(max_delta_ms, "maxDeltaMs") / 1000
++    offset = finite(right_offset_ms, "rightOffsetMs") / 1000
++    if tolerance <= 0:
++        raise ValueError("maxDeltaMs must be positive")
++    left = sorted(left, key=lambda c: c.timestamp)
++    right = sorted(right, key=lambda c: c.timestamp)
++    pairs = []
++    skipped_left, skipped_right = [], []
++    i = j = 0
++    while i < len(left) and j < len(right):
++        delta = right[j].timestamp + offset - left[i].timestamp
++        if delta < -tolerance:
++            skipped_right.append(right[j])
++            j += 1
++        elif delta > tolerance:
++            skipped_left.append(left[i])
++            i += 1
++        elif j + 1 < len(right) and abs(right[j + 1].timestamp + offset - left[i].timestamp) < abs(
++            delta
++        ):
++            skipped_right.append(right[j])
++            j += 1
++        elif i + 1 < len(left) and abs(right[j].timestamp + offset - left[i + 1].timestamp) < abs(
++            delta
++        ):
++            skipped_left.append(left[i])
++            i += 1
++        else:
++            pairs.append((left[i], right[j]))
++            i += 1
++            j += 1
++    skipped_left.extend(left[i:])
++    skipped_right.extend(right[j:])
++    deltas = sorted(abs(b.timestamp + offset - a.timestamp) * 1000 for a, b in pairs)
++    diagnostics = {
++        "pairedFrames": len(pairs),
++        "leftImages": len(left),
++        "rightImages": len(right),
++        "unpairedLeft": [c.path.name for c in skipped_left],
++        "unpairedRight": [c.path.name for c in skipped_right],
++        "maxDeltaMs": max_delta_ms,
++        "rightOffsetMs": right_offset_ms,
++        "maxResidualMs": max(deltas, default=0),
++        "medianResidualMs": deltas[len(deltas) // 2] if deltas else None,
++    }
++    return pairs, diagnostics
++
++
++def rotation_quaternion(rotation: list) -> list[float]:
++    """COLMAP quaternion order is w,x,y,z; eigen method is stable near 180 degrees."""
++    import numpy as np
++
++    r = np.asarray(rotation)
++    k = (
++        np.array(
++            [
++                [
++                    r[0, 0] - r[1, 1] - r[2, 2],
++                    r[1, 0] + r[0, 1],
++                    r[2, 0] + r[0, 2],
++                    r[2, 1] - r[1, 2],
++                ],
++                [
++                    r[1, 0] + r[0, 1],
++                    r[1, 1] - r[0, 0] - r[2, 2],
++                    r[2, 1] + r[1, 2],
++                    r[0, 2] - r[2, 0],
++                ],
++                [
++                    r[2, 0] + r[0, 2],
++                    r[2, 1] + r[1, 2],
++                    r[2, 2] - r[0, 0] - r[1, 1],
++                    r[1, 0] - r[0, 1],
++                ],
++                [r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1], r.trace()],
++            ]
++        )
++        / 3
++    )
++    _, vectors = np.linalg.eigh(k)
++    q = vectors[:, -1][[3, 0, 1, 2]]
++    return (q if q[0] >= 0 else -q).tolist()
++
++
++def write_json(path: Path, value: object) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
++
++
++def prepare_dataset(
++    left_folder: Path,
++    right_folder: Path,
++    dataset: Path,
++    profile: dict,
++    max_delta_ms: float = 30,
++    right_offset_ms: float = 0,
++    timestamps: dict | None = None,
++    overlap: int = 10,
++    loop_interval: int = 50,
++    loop_neighbors: int = 5,
++) -> Path:
++    """Stage collision-free names, calibrated camera identities, frame and match manifests."""
++    from PIL import Image
++
++    validate_profile(profile)
++    if left_folder.resolve() == right_folder.resolve():
++        raise ValueError("Stereo camera folders must be separate")
++    if overlap < 1 or loop_interval < 0 or loop_neighbors < 1:
++        raise ValueError("Invalid stereo matching settings")
++    cameras = profile["cameras"]
++    streams = [
++        read_captures(folder, (timestamps or {}).get(camera["id"]))
++        for folder, camera in zip((left_folder, right_folder), cameras, strict=True)
++    ]
++    pairs, diagnostics = pair_captures(*streams, max_delta_ms, right_offset_ms)
++    if len(pairs) < 2:
++        raise ValueError("At least two timestamp-paired frames are required")
++    images = dataset / "images"
++    config = dataset / "stereo"
++    # Refuse to silently reuse features or poses from a different source/profile.
++    if (dataset / "colmap" / "database.db").exists() or images.exists():
++        raise ValueError(
++            "Stereo preparation requires a fresh dataset (images/database already exist)"
++        )
++    config.mkdir(parents=True, exist_ok=True)
++    frames = [(a.timestamp, [a, b]) for a, b in pairs]
++    used = {c.path for pair in pairs for c in pair}
++    frames.extend(
++        (
++            c.timestamp + (right_offset_ms / 1000 if sensor else 0),
++            [None, c] if sensor else [c, None],
++        )
++        for sensor, stream in enumerate(streams)
++        for c in stream
++        if c.path not in used
++    )
++    frames.sort(key=lambda frame: frame[0])
++    manifest = []
++    for index, (timestamp, captures) in enumerate(frames):
++        names = []
++        for camera, capture in zip(cameras, captures, strict=True):
++            if capture is None:
++                continue
++            with Image.open(capture.path) as image:
++                if image.size != (camera["width"], camera["height"]):
++                    raise ValueError(
++                        f"{capture.path.name}: dimensions differ from calibrated intrinsics"
++                    )
++            # Uniform extension across sensors keeps COLMAP's filename frame grouping exact.
++            suffix = capture.path.suffix.lower()
++            name = f"{camera['id']}/frame_{index:08d}{suffix}"
++            target = images / name
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copy2(capture.path, target)
++            names.append(
++                {
++                    "cameraId": camera["id"],
++                    "image": name,
++                    "source": capture.path.name,
++                    "timestamp": capture.timestamp,
++                }
++            )
++        if len(names) == 2 and Path(names[0]["image"]).suffix != Path(names[1]["image"]).suffix:
++            raise ValueError("Paired cameras must use the same image file extension")
++        manifest.append({"timestamp": timestamp, "images": names})
++    rig = []
++    for index, camera in enumerate(cameras):
++        entry = {
++            "image_prefix": camera["id"] + "/",
++            "camera_model_name": camera["model"],
++            "camera_params": camera["params"],
++        }
++        if index == 0:
++            entry["ref_sensor"] = True
++        else:
++            entry.update(
++                cam_from_rig_rotation=rotation_quaternion(profile["rightFromLeft"]["rotation"]),
++                cam_from_rig_translation=profile["rightFromLeft"]["translation"],
++            )
++        rig.append(entry)
++    write_json(config / "rig.json", [{"cameras": rig}])
++    write_json(config / "profile.json", profile)
++    write_json(config / "frames.json", manifest)
++    write_json(config / "diagnostics.json", diagnostics)
++    write_json(
++        config / "matching.json",
++        {"overlap": overlap, "loopInterval": loop_interval, "loopNeighbors": loop_neighbors},
++    )
++    return config / "profile.json"
++
++
++def stereo_match_pairs(
++    frames: list[dict], overlap: int, loop_interval: int, loop_neighbors: int
++) -> list[tuple[str, str]]:
++    """Explicit stereo and temporal edges plus sparse long-range loop candidates."""
++    edges = set()
++
++    def connect(a: dict, b: dict) -> None:
++        for x in a["images"]:
++            for y in b["images"]:
++                if x["image"] != y["image"]:
++                    edges.add(tuple(sorted((x["image"], y["image"]))))
++
++    for i, frame in enumerate(frames):
++        connect(frame, frame)
++        for j in range(max(0, i - overlap), i):
++            connect(frames[j], frame)
++        if loop_interval and i % loop_interval == 0:
++            # Bounded sparse temporal retrieval candidates: each revisit window is geometrically
++            # verified by COLMAP. A vocabulary-tree matcher can be used separately for large sites.
++            for j in range(0, max(0, i - overlap), loop_interval):
++                for k in range(j, min(j + loop_neighbors, i - overlap)):
++                    connect(frames[k], frame)
++    return sorted(edges)
++
++
++def stage_signature(config: Path, stage: str) -> dict:
++    names = ["profile.json", "frames.json"] + (["matching.json"] if stage == "matching" else [])
++    return {name: hashlib.sha256((config / name).read_bytes()).hexdigest() for name in names}
++
++
++def stereo_stage_complete(dataset: Path, stage: str) -> bool:
++    config = dataset / "stereo"
++    try:
++        return json.loads((config / (stage + "-complete.json")).read_text()) == stage_signature(
++            config, stage
++        )
++    except (OSError, ValueError):
++        return False
++
++
++def matching_diagnostics(database: Path, frames: list[dict], candidate_count: int) -> dict:
++    """Report geometrically verified edges, especially the calibrated stereo edges."""
++    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
++        ids = dict(connection.execute("SELECT name, image_id FROM images"))
++        verified = dict(
++            connection.execute("SELECT pair_id, rows FROM two_view_geometries WHERE rows > 0")
++        )
++
++    def pair_id(a: str, b: str) -> int:
++        first, second = sorted((ids[a], ids[b]))
++        return first * 2147483647 + second
++
++    stereo = [
++        pair_id(frame["images"][0]["image"], frame["images"][1]["image"])
++        for frame in frames
++        if len(frame["images"]) == 2
++    ]
++    connected = set()
++    for edge in verified:
++        connected.update((edge // 2147483647, edge % 2147483647))
++    return {
++        "candidatePairs": candidate_count,
++        "verifiedPairs": len(verified),
++        "stereoPairs": len(stereo),
++        "stereoPairsVerified": sum(edge in verified for edge in stereo),
++        "stereoInlierCounts": [verified.get(edge, 0) for edge in stereo],
++        "imagesWithoutVerifiedMatches": sorted(
++            name for name, identity in ids.items() if identity not in connected
++        ),
++        "exhaustivePairs": len(ids) * (len(ids) - 1) // 2,
++    }
++
++
++def run_stereo_stage(args: argparse.Namespace) -> int:
++    """Extract each camera with its own intrinsics, configure frames, then GPU match."""
++    dataset = Path(args.dataset)
++    config = dataset / "stereo"
++    profile = validate_profile(json.loads((config / "profile.json").read_text()))
++    database = dataset / "colmap" / "database.db"
++    previous = config / "features-complete.json"
++    if previous.is_file() and not stereo_stage_complete(dataset, "features"):
++        raise ValueError(
++            "Stereo sources/profile changed; prepare a fresh dataset before extraction"
++        )
++    if (
++        args.stage == "matching"
++        and database.is_file()
++        and not stereo_stage_complete(dataset, "features")
++    ):
++        raise ValueError("Complete stereo feature extraction and rig configuration before matching")
++    frames = json.loads((config / "frames.json").read_text())
++
++    def run(*arguments: str) -> None:
++        subprocess.run([args.executable, *arguments], check=True)
++
++    try:
++        if args.stage == "features":
++            for camera in profile["cameras"]:
++                image_list = config / f"{camera['id']}-images.txt"
++                image_list.write_text(
++                    "".join(
++                        item["image"] + "\n"
++                        for frame in frames
++                        for item in frame["images"]
++                        if item["cameraId"] == camera["id"]
++                    )
++                )
++                run(
++                    "feature_extractor",
++                    "--database_path",
++                    str(database),
++                    "--image_path",
++                    str(dataset / "images"),
++                    "--image_list_path",
++                    str(image_list),
++                    "--ImageReader.single_camera",
++                    "1",
++                    "--ImageReader.camera_model",
++                    camera["model"],
++                    "--ImageReader.camera_params",
++                    ",".join(map(str, camera["params"])),
++                    "--FeatureExtraction.num_threads",
++                    str(args.cores),
++                    "--FeatureExtraction.max_image_size",
++                    str(args.max_image_size),
++                    "--FeatureExtraction.use_gpu",
++                    str(args.gpu),
++                )
++            run(
++                "rig_configurator",
++                "--database_path",
++                str(database),
++                "--rig_config_path",
++                str(config / "rig.json"),
++            )
++        else:
++            settings = json.loads((config / "matching.json").read_text())
++            pairs = stereo_match_pairs(
++                frames, settings["overlap"], settings["loopInterval"], settings["loopNeighbors"]
++            )
++            pair_file = config / "pairs.txt"
++            pair_file.write_text("".join(f"{a} {b}\n" for a, b in pairs))
++            write_json(
++                config / "match-diagnostics.json",
++                {
++                    "candidatePairs": len(pairs),
++                    "exhaustivePairs": sum(len(f["images"]) for f in frames)
++                    * (sum(len(f["images"]) for f in frames) - 1)
++                    // 2,
++                },
++            )
++            run(
++                "matches_importer",
++                "--database_path",
++                str(database),
++                "--match_list_path",
++                str(pair_file),
++                "--match_type",
++                "pairs",
++                "--FeatureMatching.use_gpu",
++                str(args.gpu),
++                "--FeatureMatching.num_threads",
++                str(args.cores),
++            )
++            if database.is_file():
++                write_json(
++                    config / "match-diagnostics.json",
++                    matching_diagnostics(database, frames, len(pairs)),
++                )
++    except subprocess.CalledProcessError as exc:
++        return exc.returncode
++    write_json(config / (args.stage + "-complete.json"), stage_signature(config, args.stage))
++    return 0
++
++
++def calibrate(
++    left_folder: Path,
++    right_folder: Path,
++    intrinsics: dict,
++    columns: int,
++    rows: int,
++    square_size_m: float,
++    max_delta_ms: float = 30,
++    right_offset_ms: float = 0,
++    timestamps: dict | None = None,
++    max_rms: float = 2.0,
++) -> dict:
++    """Estimate metric right_from_left from paired chessboard images with fixed intrinsics."""
++    import cv2
++    import numpy as np
++
++    validate_profile(intrinsics, extrinsics=False)
++    if columns < 3 or rows < 3 or finite(square_size_m, "square size") <= 0:
++        raise ValueError("Use at least 3x3 inner corners and a positive square size in metres")
++    if finite(max_rms, "max RMS") <= 0:
++        raise ValueError("max RMS must be positive")
++    cameras = intrinsics["cameras"]
++    streams = [
++        read_captures(folder, (timestamps or {}).get(camera["id"]))
++        for folder, camera in zip((left_folder, right_folder), cameras, strict=True)
++    ]
++    pairs, diagnostics = pair_captures(*streams, max_delta_ms, right_offset_ms)
++    if (cameras[0]["width"], cameras[0]["height"]) != (cameras[1]["width"], cameras[1]["height"]):
++        raise ValueError("Chessboard calibration requires equal sensor image dimensions")
++    grid = np.zeros((columns * rows, 3), np.float32)
++    grid[:, :2] = np.mgrid[0:columns, 0:rows].T.reshape(-1, 2) * square_size_m
++    objects, left_points, right_points, rejected = [], [], [], []
++    size = (cameras[0]["width"], cameras[0]["height"])
++    for a, b in pairs:
++        corners = []
++        for capture in (a, b):
++            image = cv2.imread(str(capture.path), cv2.IMREAD_GRAYSCALE)
++            if image is None or image.shape[::-1] != size:
++                raise ValueError(f"{capture.path}: calibration image size/read failure")
++            found, points = cv2.findChessboardCornersSB(image, (columns, rows))
++            corners.append(points if found else None)
++        if any(c is None for c in corners):
++            rejected.append([a.path.name, b.path.name])
++            continue
++        objects.append(grid.copy())
++        left_points.append(corners[0])
++        right_points.append(corners[1])
++    if len(objects) < 6:
++        raise ValueError("Calibration requires at least six paired chessboard detections")
++    matrices, distortions = [], []
++    for camera in cameras:
++        fx, fy, cx, cy = camera["params"][:4]
++        matrices.append(np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=float))
++        distortions.append(np.array(camera["params"][4:] or [0, 0, 0, 0], dtype=float))
++    fisheye = [camera["model"] == "OPENCV_FISHEYE" for camera in cameras]
++    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-7)
++    if any(fisheye):
++        if not all(fisheye):
++            raise ValueError("Calibration requires both sensors to use the same distortion family")
++        result = cv2.fisheye.stereoCalibrate(
++            [points.astype(np.float64).reshape(-1, 1, 3) for points in objects],
++            [points.astype(np.float64) for points in left_points],
++            [points.astype(np.float64) for points in right_points],
++            matrices[0],
++            distortions[0],
++            matrices[1],
++            distortions[1],
++            size,
++            flags=getattr(cv2.fisheye, "CALIB_FIX_INTRINSIC", cv2.CALIB_FIX_INTRINSIC),
++            criteria=criteria,
++        )
++        rms, rotation, translation = result[0], result[5], result[6]
++    else:
++        rms, _, _, _, _, rotation, translation, _, _ = cv2.stereoCalibrate(
++            objects,
++            left_points,
++            right_points,
++            matrices[0],
++            distortions[0],
++            matrices[1],
++            distortions[1],
++            size,
++            flags=cv2.CALIB_FIX_INTRINSIC,
++            criteria=criteria,
++        )
++    if not math.isfinite(rms) or rms > max_rms:
++        raise ValueError(f"Stereo calibration RMS {rms:.3f}px exceeds {max_rms}px")
++    profile = {
++        **intrinsics,
++        "translationUnit": "metres",
++        "rightFromLeft": {
++            "rotation": rotation.tolist(),
++            "translation": translation.ravel().tolist(),
++        },
++        "calibration": {
++            "rmsPixels": rms,
++            "acceptedPairs": len(objects),
++            "rejectedPairs": rejected,
++            "pairing": diagnostics,
++            "squareSizeM": square_size_m,
++            "innerCorners": [columns, rows],
++        },
++    }
++    return validate_profile(profile)
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    subparsers = parser.add_subparsers(dest="command", required=True)
++    for name in ("prepare", "calibrate"):
++        command = subparsers.add_parser(name)
++        command.add_argument("--left", type=Path, required=True)
++        command.add_argument("--right", type=Path, required=True)
++        command.add_argument("--profile", type=Path, required=True)
++        command.add_argument("--output", type=Path, required=True)
++        command.add_argument("--max-delta-ms", type=float, default=30)
++        command.add_argument("--right-offset-ms", type=float, default=0)
++        command.add_argument("--timestamps", type=Path)
++        if name == "calibrate":
++            command.add_argument("--columns", type=int, required=True)
++            command.add_argument("--rows", type=int, required=True)
++            command.add_argument("--square-size-m", type=float, required=True)
++            command.add_argument("--max-rms", type=float, default=2)
++        else:
++            command.add_argument("--overlap", type=int, default=10)
++            command.add_argument("--loop-interval", type=int, default=50)
++            command.add_argument("--loop-neighbors", type=int, default=5)
++    stage = subparsers.add_parser("stage")
++    stage.add_argument("--stage", choices=("features", "matching"), required=True)
++    stage.add_argument("--dataset", required=True)
++    stage.add_argument("--executable", required=True)
++    stage.add_argument("--cores", type=int, required=True)
++    stage.add_argument("--gpu", type=int, choices=(0, 1), default=1)
++    stage.add_argument("--max-image-size", type=int, default=3200)
++    args = parser.parse_args()
++    if args.command == "stage":
++        return run_stereo_stage(args)
++    profile = json.loads(args.profile.read_text())
++    timestamps = json.loads(args.timestamps.read_text()) if args.timestamps else None
++    if args.command == "calibrate":
++        result = calibrate(
++            args.left,
++            args.right,
++            profile,
++            args.columns,
++            args.rows,
++            args.square_size_m,
++            args.max_delta_ms,
++            args.right_offset_ms,
++            timestamps,
++            args.max_rms,
++        )
++        write_json(args.output, result)
++    else:
++        prepare_dataset(
++            args.left,
++            args.right,
++            args.output,
++            profile,
++            args.max_delta_ms,
++            args.right_offset_ms,
++            timestamps,
++            args.overlap,
++            args.loop_interval,
++            args.loop_neighbors,
++        )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

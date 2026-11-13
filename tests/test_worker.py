@@ -100,7 +100,7 @@ def test_existing_drive_folder_is_selected_without_moving_images() -> None:
 
     items = [{"name": "IMG_1.JPG"}, {"name": "IMG_2.JPG"}]
     assert select_expected_files(items, ["img_2.jpg"]) == [items[1]]
-    with pytest.raises(RuntimeError, match="missing 1"):
+    with pytest.raises(RuntimeError, match="missing expected file"):
         select_expected_files(items, ["IMG_3.JPG"])
 
 
@@ -257,8 +257,8 @@ def test_google_drive_source_cache_reuses_and_populates_files(
     count = client.download_folder(
         "reefplot/images",
         destination,
-        on_progress=lambda completed, _total, _bytes, _bytes_total, _name, hits: (
-            progress.append((completed, hits))
+        on_progress=lambda completed, _total, _bytes, _bytes_total, _name, hits: progress.append(
+            (completed, hits)
         ),
     )
 
@@ -297,3 +297,25 @@ def test_worker_accepts_the_pinned_version(monkeypatch: pytest.MonkeyPatch) -> N
         "openreef": "0.6.5",
         "openreefGPU": "0.6.5-gpu.5",
     }
+
+
+def test_gaussian_artifact_paths(tmp_path):
+    from worker.handler import result_file_name, select_result_artifacts
+
+    dataset = tmp_path / "Reef survey"
+    (dataset / "openmvs").mkdir(parents=True)
+    (dataset / "openmvs/scene_mesh_compact_textured.glb").write_bytes(b"glb")
+    assert "gaussian" not in select_result_artifacts(dataset)
+    alias = dataset / "models/Reef_survey_gaussian.ply"
+    alias.parent.mkdir()
+    alias.write_bytes(b"ply")
+    assert select_result_artifacts(dataset)["gaussian"] == alias
+    canonical = dataset / "gaussian/Reef_survey_gaussian.ply"
+    canonical.parent.mkdir()
+    canonical.write_bytes(b"ply")
+    assert select_result_artifacts(dataset)["gaussian"] == canonical
+    assert result_file_name("gaussian", canonical) == "Reef_survey_gaussian.ply"
+    canonical.unlink()
+    alias.unlink()
+    alias.symlink_to(canonical)
+    assert "gaussian" not in select_result_artifacts(dataset)

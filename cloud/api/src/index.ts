@@ -22,9 +22,27 @@ interface JobFile {
   name: string;
   size: number;
   contentType: string;
+  cameraId?: string;
   sourceId?: string;
   sourceName?: string;
   sourceMd5?: string;
+}
+
+interface StereoConfig {
+  leftFolder: string;
+  rightFolder: string;
+  profile: {
+    schemaVersion: number;
+    cameras: { id: string; width: number; height: number; model: string; params: number[] }[];
+    translationUnit: string;
+    rightFromLeft: { rotation: number[][]; translation: number[] };
+  };
+  maxDeltaMs: number;
+  rightOffsetMs: number;
+  overlap: number;
+  loopInterval: number;
+  loopNeighbors: number;
+  timestamps?: Record<string, Record<string, number>>;
 }
 
 interface TransferMetric {
@@ -62,6 +80,7 @@ interface JobRecord {
   files: JobFile[];
   outputMode?: 'compact' | 'full';
   includeSourceImages?: boolean;
+  stereo?: StereoConfig;
   sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
   source?: {
     kind: 'job-upload' | 'storage-folder';
@@ -79,6 +98,10 @@ interface JobRecord {
     model: string;
     manifest: string;
     project?: string;
+    gaussian?: string;
+    stereo_diagnostics?: string;
+    rig_profile?: string;
+    stereo_matching?: string;
   };
   transfers?: {
     sourceDownload?: TransferMetric;
@@ -252,6 +275,7 @@ async function createJob(request: Request, env: Env) {
   const body = await parseJson<{
     name?: unknown;
     files?: unknown;
+    stereo?: unknown;
     sourceFolder?: unknown;
     maxFiles?: unknown;
     outputMode?: unknown;
@@ -271,6 +295,10 @@ async function createJob(request: Request, env: Env) {
   if (body.includeSourceImages === true && body.outputMode !== 'full') {
     throw new HttpError(400, 'Source photographs can only be included with Full project');
   }
+  const stereo = body.stereo === undefined ? undefined : validateStereo(body.stereo);
+  if (stereo && (body.sourceFolder !== undefined || body.files !== undefined)) {
+    throw new HttpError(400, 'Stereo sources are specified by leftFolder and rightFolder');
+  }
   const name = cleanDatasetName(body.name);
   let endpointId = env.RUNPOD_ENDPOINT_ID;
   let endpointName = 'Default OpenReef endpoint';
@@ -286,13 +314,15 @@ async function createJob(request: Request, env: Env) {
   }
   const storage = storageForEnv(env);
   const sourceFolder =
-    body.sourceFolder === undefined
+    stereo ? stereo.leftFolder : body.sourceFolder === undefined
       ? undefined
       : cleanSourceFolder(body.sourceFolder);
   const source = sourceFolder
     ? { kind: 'storage-folder' as const, folder: sourceFolder }
     : { kind: 'job-upload' as const, folder: '' };
-  const sourceSelection = sourceFolder
+  const sourceSelection = stereo
+    ? await stereoFiles(storage, stereo, body.maxFiles)
+    : sourceFolder
     ? await filesFromStorageFolder(storage, sourceFolder, body.maxFiles)
     : undefined;
   const files = sourceSelection ? sourceSelection.files : validateFiles(body.files);
@@ -315,6 +345,7 @@ async function createJob(request: Request, env: Env) {
     runpodEndpointId: endpointId,
     runpodEndpointName: endpointName,
     sourceSummary: sourceSelection?.summary,
+    stereo,
     source,
     outputMode: body.outputMode === 'full' ? 'full' : 'compact',
     includeSourceImages: body.outputMode === 'full' && body.includeSourceImages === true,
@@ -405,8 +436,10 @@ async function startJob(jobId: string, env: Env) {
     throw new HttpError(409, `Job is already ${job.state}`);
   }
   const storage = storageForEnv(env);
-  const children =
-    job.source?.kind === 'storage-folder'
+  const children = job.stereo
+    ? (await Promise.all([job.stereo.leftFolder, job.stereo.rightFolder].map(
+        (folder) => storage.listRootFiles(folder)))).flat()
+    : job.source?.kind === 'storage-folder'
       ? await storage.listRootFiles(job.source.folder)
       : await storage.listFiles(`${jobFolder(jobId)}/input`);
   const uploaded = new Map(
@@ -560,7 +593,7 @@ async function proxyAsset(
     throw new HttpError(400, 'Invalid asset name');
   const job = await readJob(env, jobId);
   const allowed = new Set(
-    [job.result?.model, job.result?.manifest, job.result?.project].filter(Boolean),
+    [job.result?.model, job.result?.manifest, job.result?.project, job.result?.gaussian, job.result?.stereo_diagnostics, job.result?.rig_profile, job.result?.stereo_matching].filter(Boolean),
   );
   if (job.state !== 'completed' || !allowed.has(fileName)) {
     throw new HttpError(404, 'Asset not found');
@@ -641,11 +674,16 @@ function publicJob(job: JobRecord, env: Env) {
     error: job.error,
     outputMode: job.outputMode ?? 'compact',
     sourceSummary: job.sourceSummary,
+    stereo: job.stereo ? { cameras: job.stereo.profile.cameras.map(c => c.id) } : undefined,
     runtime: job.runpodEndpointId ? { endpointId: job.runpodEndpointId, name: job.runpodEndpointName ?? 'OpenReef endpoint' } : undefined,
     transfers: job.transfers,
     timings: job.timings,
     result: job.result
       ? {
+          stereoDiagnosticsUrl: job.result.stereo_diagnostics ? `${assetBase}/${encodeURIComponent(job.result.stereo_diagnostics)}` : undefined,
+          rigProfileUrl: job.result.rig_profile ? `${assetBase}/${encodeURIComponent(job.result.rig_profile)}` : undefined,
+          stereoMatchingUrl: job.result.stereo_matching ? `${assetBase}/${encodeURIComponent(job.result.stereo_matching)}` : undefined,
+          gaussianUrl: job.result.gaussian ? `${assetBase}/${encodeURIComponent(job.result.gaussian)}` : undefined,
           modelUrl: `${assetBase}/${encodeURIComponent(job.result.model)}`,
           manifestUrl: `${assetBase}/${encodeURIComponent(job.result.manifest)}`,
           projectUrl: job.result.project ? `${assetBase}/${encodeURIComponent(job.result.project)}` : undefined,
@@ -697,6 +735,86 @@ async function readJob(env: Env, jobId: string): Promise<JobRecord> {
 
 async function writeJob(env: Env, job: JobRecord): Promise<void> {
   await storageForEnv(env).writeJson(`${jobFolder(job.id)}/job.json`, job);
+}
+
+function validateStereo(value: unknown): StereoConfig {
+  const fail = (message: string): never => { throw new HttpError(400, message); };
+  if (!value || typeof value !== 'object') fail('Invalid stereo configuration');
+  const raw = value as StereoConfig;
+  const leftFolder = cleanSourceFolder(raw.leftFolder);
+  const rightFolder = cleanSourceFolder(raw.rightFolder);
+  if (leftFolder === rightFolder) fail('Choose separate camera folders');
+  const p = raw.profile;
+  if (!p || p.schemaVersion !== 1 || p.translationUnit !== 'metres'
+      || !Array.isArray(p.cameras) || p.cameras.length !== 2) fail('Invalid metric rig profile');
+  for (const c of p.cameras) {
+    if (!c || typeof c !== 'object' || typeof c.id !== 'string') fail('Invalid camera');
+    const count = c.model === 'PINHOLE' ? 4 : (c.model === 'OPENCV' || c.model === 'OPENCV_FISHEYE') ? 8 : 0;
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(c.id) || !count
+        || !Number.isSafeInteger(c.width) || c.width < 1
+        || !Number.isSafeInteger(c.height) || c.height < 1
+        || !Array.isArray(c.params) || c.params.length !== count
+        || !c.params.every(Number.isFinite) || c.params[0] <= 0 || c.params[1] <= 0) {
+      fail('Invalid camera identity or calibrated intrinsics');
+    }
+  }
+  if (p.cameras[0].id === p.cameras[1].id) fail('Camera identities must differ');
+  const pose = p.rightFromLeft;
+  if (!pose || !Array.isArray(pose.rotation) || pose.rotation.length !== 3
+      || !pose.rotation.every(row => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite))
+      || !Array.isArray(pose.translation) || pose.translation.length !== 3
+      || !pose.translation.every(Number.isFinite) || Math.hypot(...pose.translation) < 1e-6) {
+    fail('Invalid rig rotation or baseline');
+  }
+  const r = pose.rotation;
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+    if (Math.abs(r.reduce((sum, row) => sum + row[i] * row[j], 0) - (i === j ? 1 : 0)) > 1e-5) {
+      fail('Rig rotation must be orthonormal');
+    }
+  }
+  const determinant = r[0][0]*(r[1][1]*r[2][2]-r[1][2]*r[2][1])
+    -r[0][1]*(r[1][0]*r[2][2]-r[1][2]*r[2][0])+r[0][2]*(r[1][0]*r[2][1]-r[1][1]*r[2][0]);
+  if (Math.abs(determinant - 1) > 1e-5) fail('Rig rotation must have determinant +1');
+  const number = (input: unknown, fallback: number, min: number, max: number, integer = false) => {
+    const n = input === undefined ? fallback : input;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < min || n > max
+        || (integer && !Number.isSafeInteger(n))) fail('Invalid stereo pairing/matching setting');
+    return n as number;
+  };
+  if (raw.timestamps !== undefined) {
+    if (!raw.timestamps || typeof raw.timestamps !== 'object' || Array.isArray(raw.timestamps)) fail('Invalid timestamps');
+    for (const [id, entries] of Object.entries(raw.timestamps)) {
+      if (!p.cameras.some(c => c.id === id) || !entries || typeof entries !== 'object'
+          || !Object.values(entries).every(Number.isFinite)) fail('Invalid camera timestamps');
+    }
+  }
+  return { leftFolder, rightFolder, profile: p,
+    maxDeltaMs: number(raw.maxDeltaMs, 30, 0.001, 60000),
+    rightOffsetMs: number(raw.rightOffsetMs, 0, -86400000, 86400000),
+    overlap: number(raw.overlap, 10, 1, 100, true),
+    loopInterval: number(raw.loopInterval, 50, 0, 10000, true),
+    loopNeighbors: number(raw.loopNeighbors, 5, 1, 20, true),
+    ...(raw.timestamps ? { timestamps: raw.timestamps } : {}) };
+}
+
+async function stereoFiles(storage: ReturnType<typeof storageForEnv>, stereo: StereoConfig,
+                           limit: unknown) {
+  if (storage.provider !== 'google-drive') throw new HttpError(400, 'Stereo folders require Google Drive');
+  const streams = await Promise.all([stereo.leftFolder, stereo.rightFolder].map(
+    folder => filesFromStorageFolder(storage, folder, limit)));
+  const files = streams.flatMap((stream, index) => stream.files.map(file => ({
+    ...file, cameraId: stereo.profile.cameras[index].id,
+  })));
+  if (files.length > MAX_FILES || files.reduce((sum, f) => sum + f.size, 0) > MAX_TOTAL_SIZE) {
+    throw new HttpError(413, 'Combined stereo source exceeds the job limit');
+  }
+  if (new Set(files.map(file => file.sourceId)).size !== files.length || files.some(f => !f.sourceId)) {
+    throw new HttpError(400, 'Stereo folders must contain separate images with stable Drive IDs');
+  }
+  return { files, summary: {
+    duplicateCopiesSkipped: streams.reduce((sum, s) => sum + s.summary.duplicateCopiesSkipped, 0),
+    renamedFiles: streams.reduce((sum, s) => sum + s.summary.renamedFiles, 0),
+  } };
 }
 
 function validateFiles(value: unknown): JobFile[] {

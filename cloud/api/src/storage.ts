@@ -267,7 +267,7 @@ class GoogleDriveStorage implements Storage {
       orderBy: 'createdTime desc',
     });
     if (cursor) params.set('pageToken', cursor);
-    const page = await this.request<{ files?: { name: string }[]; nextPageToken?: string }>(`/files?${params}`);
+    const page = await this.request<{ files?: { name: string }[]; nextPageToken?: string }>(`/files?${params.toString()}`);
     return { names: (page.files ?? []).map((file) => file.name), nextCursor: page.nextPageToken };
   }
 

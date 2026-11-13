@@ -38,8 +38,12 @@ class FullProjectTests(unittest.TestCase):
         self.assertIn("--dense-original", full)
         self.assertIn("--dense-compact", full)
         self.assertNotIn("--no-dense-original", full)
-        for options in ({"outputMode": "bad"}, {"outputMode": []},
-                        {"includeSourceImages": True}, {"includeSourceImages": "false"}):
+        for options in (
+            {"outputMode": "bad"},
+            {"outputMode": []},
+            {"includeSourceImages": True},
+            {"includeSourceImages": "false"},
+        ):
             with self.assertRaises(ValueError):
                 worker.project_options(options)
 
@@ -96,10 +100,16 @@ class FullProjectTests(unittest.TestCase):
 
     def test_handler_uploads_full_archive_before_temporary_cleanup(self):
         job_id = "12345678-1234-4123-8123-123456789abc"
-        job = {"id": job_id, "schemaVersion": 1, "name": "survey", "state": "queued",
-               "outputMode": "full", "includeSourceImages": True,
-               "files": [{"name": "one.jpg", "size": 5}],
-               "versions": {"openreef": "0.6.5", "openreefGPU": "0.6.5-gpu.6"}}
+        job = {
+            "id": job_id,
+            "schemaVersion": 1,
+            "name": "survey",
+            "state": "queued",
+            "outputMode": "full",
+            "includeSourceImages": True,
+            "files": [{"name": "one.jpg", "size": 5}],
+            "versions": {"openreef": "0.6.5", "openreefGPU": "0.6.5-gpu.6"},
+        }
         storage = FakeStorage(job)
         dataset_paths = []
 
@@ -111,9 +121,20 @@ class FullProjectTests(unittest.TestCase):
             (dataset / "openmvs/scene_mesh.ply").write_bytes(b"original mesh")
 
         env = {"OPENREEF_VERSION": "0.6.5", "OPENREEF_GPU_VERSION": "0.6.5-gpu.6"}
-        event = {"input": {"job_id": job_id, "schema_version": 1,
-                           "openreef_version": "0.6.5", "openreef_gpu_version": "0.6.5-gpu.6"}}
-        with patch.dict(os.environ, env), patch.dict(sys.modules, {"openreef": types.SimpleNamespace(__version__="0.6.5")}), patch.object(worker, "create_storage_client", return_value=storage), patch.object(worker, "run_pipeline", side_effect=pipeline):
+        event = {
+            "input": {
+                "job_id": job_id,
+                "schema_version": 1,
+                "openreef_version": "0.6.5",
+                "openreef_gpu_version": "0.6.5-gpu.6",
+            }
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch.dict(sys.modules, {"openreef": types.SimpleNamespace(__version__="0.6.5")}),
+            patch.object(worker, "create_storage_client", return_value=storage),
+            patch.object(worker, "run_pipeline", side_effect=pipeline),
+        ):
             result = worker.handler(event)
         self.assertEqual(result["state"], "completed")
         self.assertEqual(result["result"]["project"], "full-project.tar.gz")

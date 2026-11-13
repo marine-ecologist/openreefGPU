@@ -44,7 +44,7 @@ type CloudJob = {
   outputMode?: 'compact' | 'full';
   sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
   runtime?: { endpointId: string; name: string };
-  result?: { modelUrl: string; manifestUrl: string; projectUrl?: string };
+  result?: { modelUrl: string; gaussianUrl?: string; manifestUrl: string; projectUrl?: string; stereoDiagnosticsUrl?: string; rigProfileUrl?: string; stereoMatchingUrl?: string };
   storage?: { provider: 'google-drive' | 'sharepoint'; root: string };
   versions?: { openreef: string; openreefGPU: string };
   transfers?: {
@@ -84,7 +84,11 @@ type RuntimeCatalog = { endpoints: RuntimeEndpoint[]; checkedAt: string; warning
 
 export function CloudJobs() {
   const [name, setName] = useState('New reef survey');
-  const [sourceMode, setSourceMode] = useState<'drive' | 'upload'>('drive');
+  const [sourceMode, setSourceMode] = useState<'drive' | 'upload' | 'stereo'>('drive');
+  const [rightFolder, setRightFolder] = useState('camera-right');
+  const [rigProfile, setRigProfile] = useState('');
+  const [pairTolerance, setPairTolerance] = useState(30);
+  const [rightOffset, setRightOffset] = useState(0);
   const [driveFolder, setDriveFolder] = useState('images');
   const [driveLimit, setDriveLimit] = useState(30);
   const [outputMode, setOutputMode] = useState<'compact' | 'full'>('compact');
@@ -106,15 +110,16 @@ export function CloudJobs() {
   useEffect(() => {
     if (!API_URL) return;
     const controller = new AbortController();
-    setRuntimeLoading(true);
-    setRuntimeError('');
+    const frame = requestAnimationFrame(() => {
+      if (!controller.signal.aborted) { setRuntimeLoading(true); setRuntimeError(''); }
+    });
     api<RuntimeCatalog>('/v1/runpod/endpoints', { signal: controller.signal })
       .then((catalog) => { if (!controller.signal.aborted) setRuntimeCatalog(catalog); })
       .catch((reason) => {
         if (!controller.signal.aborted) setRuntimeError(reason instanceof Error ? reason.message : 'Could not load RunPod workers.');
       })
-      .finally(() => { if (!controller.signal.aborted) setRuntimeLoading(false); });
-    return () => controller.abort();
+      .finally(() => { cancelAnimationFrame(frame); if (!controller.signal.aborted) setRuntimeLoading(false); });
+    return () => { cancelAnimationFrame(frame); controller.abort(); };
   }, [runtimeRefresh]);
 
   const totalBytes = useMemo(
@@ -177,6 +182,7 @@ export function CloudJobs() {
         <ReefViewer
           cloudModel={{
             url: absoluteApiUrl(job.result.modelUrl),
+            gaussianUrl: job.result.gaussianUrl ? absoluteApiUrl(job.result.gaussianUrl) : undefined,
             label: job.name,
             source: `openreefGPU ${job.versions?.openreefGPU ?? ''} · ${storageLabel(job)} job ${job.id.slice(0, 8)}`,
           }}
@@ -208,7 +214,7 @@ export function CloudJobs() {
       setError('Choose at least two overlapping reef photographs.');
       return;
     }
-    if (sourceMode === 'drive' && !driveFolder.trim()) {
+    if (sourceMode !== 'upload' && !driveFolder.trim()) {
       setError('Enter the folder containing the Drive photographs.');
       return;
     }
@@ -224,7 +230,11 @@ export function CloudJobs() {
           includeSourceImages: outputMode === 'full' && includeSourceImages,
           uploadProtocol: sourceMode === 'upload' ? 'per-file' : undefined,
           runpodEndpointId: runtimeId || undefined,
-          ...(sourceMode === 'drive'
+          ...(sourceMode === 'stereo'
+            ? { stereo: { leftFolder: driveFolder, rightFolder,
+                  profile: JSON.parse(rigProfile), maxDeltaMs: pairTolerance,
+                  rightOffsetMs: rightOffset }, maxFiles: driveLimit }
+            : sourceMode === 'drive'
             ? { sourceFolder: driveFolder, maxFiles: driveLimit }
             : {
                 files: files.map((file) => ({
@@ -313,7 +323,7 @@ export function CloudJobs() {
               {runtimeLoading ? 'Checking workers…' : 'Refresh RunPod workers'}
             </button>
             {runtimeCatalog?.checkedAt && <small>Worker status checked {new Date(runtimeCatalog.checkedAt).toLocaleTimeString()}</small>}
-            {(runtimeError || runtimeCatalog?.warning) && <p className="cloud-notice" role="status">{runtimeError || runtimeCatalog?.warning}</p>}
+            {(runtimeError || runtimeCatalog?.warning) && <output className="cloud-notice">{runtimeError || runtimeCatalog?.warning}</output>}
             {runtimeCatalog?.truncated && <p className="cloud-notice">Showing the first 12 endpoints. Configure the endpoint allowlist to narrow the selection.</p>}
             <label>
               <span>Survey name</span>
@@ -339,18 +349,41 @@ export function CloudJobs() {
                 Upload new photos
               </button>
             </div>
-            {sourceMode === 'drive' ? (
+            <button type="button" aria-pressed={sourceMode === 'stereo'}
+              onClick={() => setSourceMode('stereo')}>Stereo camera folders</button>
+            {sourceMode !== 'upload' ? (
               <>
                 <label>
-                  <span>Folder inside reefplot</span>
+                  <span>{sourceMode === 'stereo' ? 'Left camera folder inside reefplot' : 'Folder inside reefplot'}</span>
                   <input
                     value={driveFolder}
                     maxLength={300}
                     onChange={(event) => setDriveFolder(event.target.value)}
                   />
                 </label>
+                {sourceMode === 'stereo' && <>
+                  <label><span>Right camera folder inside reefplot</span>
+                    <input value={rightFolder} onChange={event => setRightFolder(event.target.value)} required />
+                  </label>
+                  <label><span>Calibrated rig profile (.json)</span>
+                    <input type="file" accept=".json,application/json" onChange={async event => {
+                      const file = event.target.files?.[0];
+                      if (file) setRigProfile(await file.text());
+                    }} />
+                    <small>Use a saved calibration for these camera identities, resolution and lens settings.</small>
+                  </label>
+                  <label><span>Maximum pair time difference (ms)</span>
+                    <input type="number" min={0.001} step="any" value={pairTolerance}
+                      onChange={event => setPairTolerance(Number(event.target.value))} />
+                  </label>
+                  <label><span>Correction added to right camera clock (ms)</span>
+                    <input type="number" step="any" value={rightOffset}
+                      onChange={event => setRightOffset(Number(event.target.value))} />
+                    <small>Pairs use capture timestamps. Missed exposures remain single-camera frames.</small>
+                  </label>
+                </>}
                 <label>
-                  <span>Photos in first run</span>
+                  <span>{sourceMode === 'stereo' ? 'Maximum photos per camera' : 'Photos in first run'}</span>
                   <input
                     type="number"
                     min={2}
@@ -546,6 +579,9 @@ export function CloudJobs() {
                 <Button onClick={() => setShowViewer(true)}>
                   Open model in viewer
                 </Button>
+                {job.result.stereoDiagnosticsUrl && <a href={absoluteApiUrl(job.result.stereoDiagnosticsUrl)} download>Download stereo pairing diagnostics</a>}
+                {job.result.rigProfileUrl && <a href={absoluteApiUrl(job.result.rigProfileUrl)} download>Download reusable rig profile</a>}
+                {job.result.stereoMatchingUrl && <a href={absoluteApiUrl(job.result.stereoMatchingUrl)} download>Download matching diagnostics</a>}
                 {job.result.projectUrl && (
                   <a className="cloud-project-download" href={absoluteApiUrl(job.result.projectUrl)} download="full-project.tar.gz">
                     Download full project (.tar.gz)
