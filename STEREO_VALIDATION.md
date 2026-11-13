@@ -1,7 +1,8 @@
 # Stereo validation — 13 November 2026
 
 Implementation is in the sibling fresh checkouts `openreef-stereo` and
-`openreefGPU-stereo`. The pre-existing `openreefGPU` workspace is unchanged.
+`openreefGPU-stereo`. The changes have since been integrated into `openreefGPU`; see
+[STEREO_DEPLOYMENT.md](STEREO_DEPLOYMENT.md) for live deployment status.
 The fresh GPU checkout carries forward the workspace's newer Gaussian-viewer and
 diagnostic/setup changes, which were absent from the fetched GitHub snapshot.
 

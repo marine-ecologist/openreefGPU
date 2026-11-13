@@ -78,9 +78,10 @@ imports. Review/regenerate the patch when upgrading the pinned upstream release;
 patch application fails the build if it no longer applies cleanly.
 
 Deploy the new worker image and matching broker/frontend together, then run a small
-known-rig survey on an endpoint. Existing active workers were not replaced during
-implementation. End-to-end OpenMVS/OpenSplat/GPU behavior still requires validation
-on the actual built worker image.
+known-rig survey on an endpoint. The `.10` worker, API and frontend have now been deployed, and all three listed
+RunPod workers are on release 58. End-to-end OpenMVS/OpenSplat/GPU behavior still
+requires the user's test survey on the built worker image. See
+[STEREO_DEPLOYMENT.md](STEREO_DEPLOYMENT.md) for the deployment record.
 
 ## Verification
 
@@ -97,8 +98,6 @@ missed exposure, fixed metric baseline and single-camera regression. Its generat
 images are synthetic; they are not a substitute for an underwater calibration and
 survey test.
 
-At access verification on 13 November 2026, the broker's configured endpoint was
-`93jkogjuc9l6pu` with one running and two idle workers. Broker endpoint discovery
-reported unavailable, so its health response does not verify image, GPU or secret
-configuration. No RunPod plugin tools were exposed in this chat and plugin discovery
-returned no match. The live endpoint was not modified or submitted new GPU jobs.
+Production deployment status is recorded in
+[STEREO_DEPLOYMENT.md](STEREO_DEPLOYMENT.md). The RunPod console verified that all
+three workers reached release 58 automatically. No real test survey was submitted.
