@@ -218,6 +218,27 @@ export function CloudJobs() {
       setError('Enter the folder containing the Drive photographs.');
       return;
     }
+    let stereoProfile: unknown;
+    if (sourceMode === 'stereo') {
+      if (!rightFolder.trim()) {
+        setError('Enter the right camera folder.');
+        return;
+      }
+      if (!rigProfile.trim()) {
+        setError('Choose a calibrated rig profile (.json) before submitting a stereo survey. The two photo folders alone do not provide the rig calibration.');
+        return;
+      }
+      try {
+        stereoProfile = JSON.parse(rigProfile);
+      } catch {
+        setError('The rig profile is not valid JSON. Choose the complete calibration .json file and try again.');
+        return;
+      }
+      if (!stereoProfile || typeof stereoProfile !== 'object' || Array.isArray(stereoProfile)) {
+        setError('Choose a rig calibration JSON object, rather than a list or another JSON value.');
+        return;
+      }
+    }
     setSubmitting(true);
     setError(null);
     setUploadProgress(0);
@@ -232,7 +253,7 @@ export function CloudJobs() {
           runpodEndpointId: runtimeId || undefined,
           ...(sourceMode === 'stereo'
             ? { stereo: { leftFolder: driveFolder, rightFolder,
-                  profile: JSON.parse(rigProfile), maxDeltaMs: pairTolerance,
+                  profile: stereoProfile, maxDeltaMs: pairTolerance,
                   rightOffsetMs: rightOffset }, maxFiles: driveLimit }
             : sourceMode === 'drive'
             ? { sourceFolder: driveFolder, maxFiles: driveLimit }
@@ -368,9 +389,16 @@ export function CloudJobs() {
                   <label><span>Calibrated rig profile (.json)</span>
                     <input type="file" accept=".json,application/json" onChange={async event => {
                       const file = event.target.files?.[0];
-                      if (file) setRigProfile(await file.text());
+                      setRigProfile('');
+                      if (!file) return;
+                      try {
+                        setRigProfile(await file.text());
+                        setError(null);
+                      } catch {
+                        setError('Could not read the rig profile. Select the calibration .json file again.');
+                      }
                     }} />
-                    <small>Use a saved calibration for these camera identities, resolution and lens settings.</small>
+                    <small>Required for stereo: select a saved calibration for these camera identities, resolution and lens settings.</small>
                   </label>
                   <label><span>Maximum pair time difference (ms)</span>
                     <input type="number" min={0.001} step="any" value={pairTolerance}
