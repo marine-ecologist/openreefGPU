@@ -12,7 +12,7 @@ release Dockerfile reuses the pinned native CUDA/COLMAP/OpenMVS stack:
 ```bash
 docker buildx build --platform linux/amd64 \
   -f worker/Dockerfile.release \
-  -t ghcr.io/marine-ecologist/openreef-gpu:0.6.5-gpu.10-volume.1 \
+  -t ghcr.io/marine-ecologist/openreef-gpu:0.6.5-gpu.10-volume.2 \
   --push .
 ```
 

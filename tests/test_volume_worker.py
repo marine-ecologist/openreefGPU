@@ -245,3 +245,21 @@ def test_submitter_sends_volume_payload_without_cloud_job(mounted, monkeypatch, 
     assert sent[0]["input"]["pipeline"] == {"cores": 16}
     assert "job_id" not in sent[0]["input"]
     assert "test-secret" not in capsys.readouterr().out
+
+
+def test_dispatch_supports_runpy_container_start_command(mounted, monkeypatch):
+    import runpy
+    from types import SimpleNamespace
+
+    registered = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "runpod",
+        SimpleNamespace(
+            serverless=SimpleNamespace(start=lambda settings: registered.update(settings))
+        ),
+    )
+    runpy.run_path(str(Path(worker.__file__)), run_name="__main__")
+    result = registered["handler"]({"input": payload()})
+    assert result["state"] == "completed"
+    assert result["filesDownloaded"] == 0
