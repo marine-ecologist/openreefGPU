@@ -110,6 +110,9 @@ uses `/runpod-volume/openreef-source-cache`: the first run fills it from Google 
 stage matching source images from the persistent cache. The browser reports cache hits and staging
 time; compute-only benchmark totals continue to exclude source transfer and output upload.
 
+For Drive-free iterations against photographs already on the network volume, see
+[Direct volume runs](VOLUME_RUNS.md).
+
 ## RunPod image
 
 Build from this repository root:

@@ -11,6 +11,7 @@ import posixpath
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -779,6 +780,10 @@ def validate_version_contract(
 def handler(event: dict[str, Any]) -> dict[str, Any]:
     """Process one Runpod event and persist durable state in cloud storage."""
     payload = event.get("input") or {}
+    if "volume" in payload:
+        from worker.volume import run
+
+        return run(payload, sys.modules[__name__])
     job_id = str(payload.get("job_id", ""))
     if not JOB_ID_PATTERN.fullmatch(job_id):
         raise ValueError("input.job_id must be a UUID")
