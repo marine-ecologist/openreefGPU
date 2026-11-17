@@ -96,7 +96,8 @@ using the existing RunPod S3 profile:
 ```bash
 aws --profile runpod --region us-ne-1 \
   --endpoint-url https://s3api-us-ne-1.runpod.io \
-  s3 cp 's3://s8baqr2m12/openreef-runs/<uuid>/dataset/openmvs/scene_mesh_compact_textured.glb' ./model.glb
+  s3api get-object --bucket s8baqr2m12 \
+  --key 'openreef-runs/<uuid>/dataset/openmvs/scene_mesh_compact_textured.glb' ./model.glb
 ```
 
 Use the actual returned artifact path if the model is under `dataset/models` instead.
@@ -129,3 +130,38 @@ The versions must match the deployed image. Volume paths are relative to
 `openreef-sources`; absolute paths, traversal outside that root, and source links
 outside it are rejected. Pipeline overrides are restricted to validated `cores`,
 `max_image_size`, `max_resolution`, `sequential_overlap`, and `stages` values.
+
+Direct S3 `get-object` was verified for worker-created files. If `aws s3 cp` fails
+with a HeadObject 403, use `s3api get-object` as above.
+
+The volume worker was published with GitHub Actions (no local Docker required),
+from branch `codex/direct-volume-worker-20261117`, commit
+`31816b64ee7d6962a97b29266af15153f329bf1a`. Endpoint `93jkogjuc9l6pu` was updated
+to `0.6.5-gpu.10-volume.2`. A 200-image feature-extraction request completed in
+33.016 seconds with zero downloads. Its persistent run directory is
+`openreef-runs/170289f8-ad2f-4dc7-93f6-de738028e23c/`; its 297,693,184-byte
+feature database, logs, and completed status remain accessible through S3.
+This was a feature-extraction test, not a complete reconstruction or stereo validation.
+
+## Joint A/B reconstruction with estimated cameras
+
+Use `--joint` for a single reconstruction from both folders when no matching fixed
+rig calibration is available. This mode estimates one OPENCV camera model per source
+folder and freely optimizes image poses. It creates temporal and cross-camera matching
+candidates; corresponding filenames are candidates, not claims of synchronized exposures.
+No fixed baseline or external rig profile is imposed. Output scale is not metric unless
+OpenReef subsequently establishes scale from valid scene markers.
+
+```bash
+python3 scripts/submit-volume.py --endpoint 93jkogjuc9l6pu --joint \
+  --folder original/video_video_A-BoobyPass-12-11-26 \
+  --right-folder original/video_video_B-BoobyPass-12-11-26 \
+  --max-image-size 1600 --max-resolution 1600 --cores 16 --wait
+```
+
+Omit `--count`: all 1,326 A images and 1,325 B images are included. Feature extraction
+and dense reconstruction use a maximum dimension of 1600 pixels. The source photographs
+are linked, remain unmodified, and are not downloaded. Both camera identities and verified
+cross-camera matches are checked. `dataset/joint/diagnostics.json` records camera IDs,
+verified matches and registration counts for each sparse model. This mode runs the full
+pipeline and currently rejects partial-stage requests. It requires the joint-enabled image.

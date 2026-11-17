@@ -19,6 +19,9 @@ def main():
         required=True,
         help="Folder relative to openreef-sources; repeat for independent runs",
     )
+    parser.add_argument(
+        "--joint", action="store_true", help="Estimate two cameras without a fixed rig"
+    )
     parser.add_argument("--right-folder", help="Second camera for a calibrated stereo run")
     parser.add_argument("--profile", help="Calibration JSON path relative to openreef-sources")
     parser.add_argument("--timestamps", help="Timing JSON path relative to openreef-sources")
@@ -35,7 +38,9 @@ def main():
     args = parser.parse_args()
     if not args.endpoint.isalnum():
         parser.error("endpoint must be a RunPod endpoint ID")
-    if args.right_folder and (len(args.folder) != 1 or not args.profile):
+    if args.joint and (not args.right_folder or args.profile or args.timestamps):
+        parser.error("--joint requires --right-folder and does not use a rig profile")
+    if args.right_folder and (len(args.folder) != 1 or (not args.profile and not args.joint)):
         parser.error("stereo requires one --folder, --right-folder and --profile")
     if args.right_folder and (args.count is not None or args.start):
         parser.error("Stereo subsets require preselected, timestamp-aligned folders")
@@ -62,7 +67,11 @@ def main():
         if args.count is not None:
             volume["count"] = args.count
         if args.right_folder:
-            volume.update(right_folder=args.right_folder, profile=args.profile)
+            volume.update(right_folder=args.right_folder)
+            if args.joint:
+                volume["mode"] = "joint"
+            else:
+                volume["profile"] = args.profile
             if args.timestamps:
                 volume["timestamps"] = args.timestamps
         payload = {
