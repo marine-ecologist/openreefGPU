@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
 import time
@@ -26,6 +27,49 @@ from geometry import (
     write_model,
 )
 from PIL import Image
+
+
+def product_scratch(root):
+    """Keep recomputable depth intermediates off the shared network volume."""
+    base = os.environ.get("PAIRED_PRODUCT_SCRATCH")
+    if not base:
+        return None
+    scratch = Path(base) / root.name
+    scratch.mkdir(parents=True, exist_ok=False)
+    for relative in ("colmap/dense", "openmvs"):
+        target = scratch / relative
+        target.mkdir(parents=True)
+        (root / relative).symlink_to(target, target_is_directory=True)
+    return scratch
+
+
+def persist_products(root, scratch):
+    if scratch is None:
+        return
+    source = scratch / "openmvs"
+    products = sorted(
+        {
+            p
+            for pattern in ("*.glb", "*_orthomap.png", "*_orthomap.txt", "scene_mesh.ply")
+            for p in source.glob(pattern)
+        }
+    )
+    if not any(p.suffix == ".glb" for p in products) or not any(
+        p.name.endswith("_orthomap.png") for p in products
+    ):
+        raise ValueError("Expected textured GLB and orthographic image were not produced")
+    # Retain the scratch link if copying fails, so the active worker can retry.
+    retained = root / "products-persistent"
+    retained.mkdir()
+    for product in products:
+        destination = retained / product.name
+        shutil.copy2(product, destination)
+        if digest(destination) != digest(product):
+            raise ValueError(f"Product copy integrity failed: {product.name}")
+    (root / "openmvs").unlink()
+    retained.rename(root / "openmvs")
+    (root / "colmap/dense").unlink()
+
 
 DIFFERENCES = [
     (
@@ -498,6 +542,7 @@ def run(args):
                 raise ValueError(
                     "Largest component covers less than 95% of eligible images; products stopped"
                 )
+            scratch = product_scratch(root)
             execute(
                 [
                     "openreef-pipeline",
@@ -542,6 +587,7 @@ def run(args):
                     args.cores,
                 ]
             )
+            persist_products(root, scratch)
         state.update(
             state="completed",
             phase="products" if args.products else "oriented_sparse_check",

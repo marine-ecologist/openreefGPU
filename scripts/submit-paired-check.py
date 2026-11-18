@@ -75,7 +75,7 @@ def main():
         "scaling": {"type": "QUEUE_DELAY", "queueDelay": 4},
         "dataCenterIds": ["US-NE-1"],
         "mounts": {"network": [{"volumeId": "s8baqr2m12"}]},
-        "disk": 100,
+        "disk": 500,
         "timeout": args.timeout_hours * 3600000,
         "env": {},
     }

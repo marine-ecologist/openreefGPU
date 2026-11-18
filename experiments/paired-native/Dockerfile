@@ -7,6 +7,8 @@ COPY experiments/paired-native/ /opt/paired-native/
 RUN cmake -S /opt/paired-native -B /opt/paired-native/build \
     -DCMAKE_BUILD_TYPE=Release -DCeres_DIR=/usr/local/lib/cmake/Ceres \
     -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
+    -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
+    -Dcudss_LIBRARY_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12 \
     && cmake --build /opt/paired-native/build --parallel 2
 RUN python3 -m pip install --break-system-packages --no-cache-dir 'pytest>=8,<10' \
     && PAIRED_BA_BINARY=/opt/paired-native/build/paired-baseline-ba \

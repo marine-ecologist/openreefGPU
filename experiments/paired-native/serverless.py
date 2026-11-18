@@ -63,8 +63,14 @@ def handler(job):
     log = root.parent / (run_id + ".log")
     print(json.dumps({"run": str(root), "log": str(log)}), flush=True)
     with log.open("w") as stream:
+        environment = dict(os.environ, PAIRED_PRODUCT_SCRATCH="/tmp/openreef-native-products")
         process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=environment,
         )
         with process.stdout:
             for line in process.stdout:

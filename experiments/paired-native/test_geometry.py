@@ -181,3 +181,29 @@ def test_text_models_load_in_native_colmap(tmp_path):
         check=True,
     )
     assert (target / "images.bin").stat().st_size > 100
+
+
+def test_products_survive_scratch_removal(tmp_path, monkeypatch):
+    import shutil
+
+    from compare import persist_products, product_scratch
+
+    root = tmp_path / "volume/run"
+    (root / "colmap").mkdir(parents=True)
+    monkeypatch.setenv("PAIRED_PRODUCT_SCRATCH", str(tmp_path / "compute"))
+    scratch = product_scratch(root)
+    for name, content in [
+        ("model.glb", b"glb-test"),
+        ("model_orthomap.png", b"ortho-test"),
+        ("model_orthomap.txt", b"coordinates"),
+        ("scene_mesh.ply", b"mesh"),
+    ]:
+        (root / "openmvs" / name).write_bytes(content)
+    (root / "openmvs/scene.mvs").write_bytes(b"ephemeral references")
+    persist_products(root, scratch)
+    shutil.rmtree(scratch)
+    assert not (root / "openmvs").is_symlink()
+    assert (root / "openmvs/model.glb").read_bytes() == b"glb-test"
+    assert (root / "openmvs/model_orthomap.png").read_bytes() == b"ortho-test"
+    assert not (root / "openmvs/scene.mvs").exists()
+    assert not (root / "colmap/dense").exists()
