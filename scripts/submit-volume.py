@@ -37,6 +37,11 @@ def main():
         "--count", type=int, help="Consecutive image subset size (single camera only)"
     )
     parser.add_argument("--start", type=int, default=0, help="Zero-based image offset")
+    parser.add_argument(
+        "--merge-components",
+        action="store_true",
+        help="Try geometric merging of completed sparse models",
+    )
     parser.add_argument("--resume-run", help="Retained joint run UUID with completed matching")
     parser.add_argument(
         "--execution-timeout", type=int, default=14400, help="Maximum execution seconds"
@@ -85,6 +90,10 @@ def main():
             if not args.joint:
                 parser.error("--resume-run requires --joint")
             volume["resume_run"] = args.resume_run
+        if args.merge_components:
+            if not args.resume_run:
+                parser.error("--merge-components requires --resume-run")
+            volume["merge_components"] = True
         payload = {
             "schema_version": 1,
             "openreef_version": versions["openreef"]["version"],

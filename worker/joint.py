@@ -176,14 +176,28 @@ def run(dataset: Path) -> None:
         raise RuntimeError("No verified matches connect the two cameras")
     sparse = dataset / "colmap/sparse"
     sparse.mkdir()
-    (config / "snapshots").mkdir()
-    initial = None
-    if settings.get("resumeSnapshots"):
-        snapshot = largest_snapshot(Path(settings["resumeSnapshots"]))
-        if snapshot:
-            initial = config / "initial-model"
-            shutil.copytree(snapshot, initial)
-    execute(mapper_command(dataset, settings["cores"], initial))
+    if settings.get("reuseSparseModels"):
+        previous = Path(settings["reuseSparseModels"])
+        for model in sorted(previous.iterdir()):
+            if model.is_symlink() or not model.is_dir():
+                continue
+            required = ("cameras.bin", "images.bin", "points3D.bin")
+            if all((model / part).is_file() for part in required):
+                target = sparse / model.name
+                target.mkdir()
+                for part in model.glob("*.bin"):
+                    if part.is_symlink() or not part.resolve().is_relative_to(previous.resolve()):
+                        raise ValueError("Sparse model link escapes its retained run")
+                    shutil.copy2(part, target / part.name)
+    else:
+        (config / "snapshots").mkdir()
+        initial = None
+        if settings.get("resumeSnapshots"):
+            snapshot = largest_snapshot(Path(settings["resumeSnapshots"]))
+            if snapshot:
+                initial = config / "initial-model"
+                shutil.copytree(snapshot, initial)
+        execute(mapper_command(dataset, settings["cores"], initial))
 
     from openreef.io.markertags import read_registered_images
 
@@ -199,6 +213,54 @@ def run(dataset: Path) -> None:
                 "path": str(binary.parent),
                 "registeredImages": len(registered),
                 "registeredBySource": by_source,
+            }
+        )
+    from worker.merge import image_names, merge_components
+
+    all_names = [image_names(Path(item["path"])) for item in models]
+    diagnostic["uniqueRegisteredImages"] = len(set.union(*all_names)) if all_names else 0
+    diagnostic["unregisteredImages"] = sorted(set(settings["images"]) - set().union(*all_names))
+    diagnostic["modelImageNames"] = {
+        Path(item["path"]).name: sorted(names)
+        for item, names in zip(models, all_names, strict=True)
+    }
+    if settings.get("reuseSparseModels"):
+        merged, report = merge_components(
+            [Path(item["path"]) for item in models], config / "merge-attempts"
+        )
+        diagnostic["merge"] = report
+        (config / "diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
+        if not report["improvedLargest"]:
+            print(
+                "No geometrically validated merge improved the retained model; no dense rerun",
+                flush=True,
+            )
+            return
+        target = sparse / "merged"
+        shutil.copytree(merged, target)
+        execute(
+            [
+                "colmap",
+                "bundle_adjuster",
+                "--input_path",
+                str(target),
+                "--output_path",
+                str(target),
+                "--BundleAdjustmentCeres.use_gpu",
+                "1",
+                "--BundleAdjustmentCeres.gpu_index",
+                "-1",
+            ]
+        )
+        registered = image_names(target)
+        models.append(
+            {
+                "path": str(target),
+                "registeredImages": len(registered),
+                "registeredBySource": {
+                    cam: sum(name.startswith(cam + "/") for name in registered)
+                    for cam in ("camera-A", "camera-B")
+                },
             }
         )
     diagnostic["sparseModels"] = models

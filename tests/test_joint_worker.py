@@ -55,6 +55,11 @@ def test_joint_volume_links_all_images_without_requiring_calibration(tmp_path, m
         settings = json.loads((dataset / "joint/settings.json").read_text())
         assert len(settings["images"]) == 4
         assert "--stereo" not in settings["pipelineCommand"]
+        if settings.get("reuseSparseModels"):
+            assert Path(settings["reuseSparseModels"]).name == "sparse"
+            (dataset / "joint/diagnostics.json").write_text(
+                json.dumps({"merge": {"improvedLargest": False}})
+            )
         script = (
             'from pathlib import Path; import sys; p=Path(sys.argv[1])/"models"; '
             'p.mkdir(); (p/"test_textured_mesh_compact.glb").write_bytes(b"glb")'
@@ -78,6 +83,33 @@ def test_joint_volume_links_all_images_without_requiring_calibration(tmp_path, m
     assert result["metricCalibration"] is False
     for c in "AB":
         assert (Path(result["dataset"]) / f"images/camera-{c}/frame_000000.jpg").is_symlink()
+
+    previous = Path(result["dataset"])
+    (previous / "colmap/sparse").mkdir(parents=True)
+    with sqlite3.connect(previous / "colmap/database.db") as conn:
+        conn.execute("CREATE TABLE retained (value INTEGER)")
+    (previous / "joint/diagnostics.json").write_text(
+        json.dumps({"verifiedCrossCameraPairs": 1, "sparseModels": [{"path": "0"}]})
+    )
+    payload = {
+        "schema_version": 1,
+        "openreef_version": "0.6.5",
+        "openreef_gpu_version": "0.6.5-gpu.10",
+        "volume": {
+            "folder": "A",
+            "right_folder": "B",
+            "mode": "joint",
+            "resume_run": result["id"],
+            "merge_components": True,
+        },
+        "pipeline": {"max_image_size": 1600, "max_resolution": 1600, "cores": 16},
+    }
+    recovered = worker.handler({"input": payload})
+    assert recovered["state"] == "completed" and recovered["artifacts"] == {}
+    assert recovered["resumedFrom"] == result["id"]
+    (tmp_path / "openreef-sources/A/frame_000000.jpg").write_bytes(b"changed source size")
+    with pytest.raises(ValueError, match="manifest has changed"):
+        worker.handler({"input": payload})
 
 
 def test_database_recovery_is_independent_and_keeps_wal_records(tmp_path):
@@ -122,3 +154,67 @@ def test_recovery_selects_largest_complete_snapshot(tmp_path):
     incomplete.mkdir()
     (incomplete / "images.bin").write_bytes(struct.pack("<Q", 2000))
     assert largest_snapshot(tmp_path).name == "older"
+
+
+def _write_model_names(model, names):
+    import struct
+
+    model.mkdir(exist_ok=True)
+    with (model / "images.bin").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(names)))
+        for name in sorted(names):
+            stream.write(bytes(64) + name.encode() + b"\0" + struct.pack("<Q", 0))
+
+
+def test_component_merge_can_join_through_a_bridge(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import worker.merge as merging
+
+    groups = [set("abcde"), set("defgh"), set("bcdfg")]
+    models = [tmp_path / str(i) for i in range(3)]
+    for model, names in zip(models, groups, strict=True):
+        _write_model_names(model, names)
+
+    def native_merge(command, check):
+        first = Path(command[command.index("--input_path1") + 1])
+        second = Path(command[command.index("--input_path2") + 1])
+        target = Path(command[command.index("--output_path") + 1])
+        assert command[-2:] == ["--max_reproj_error", "8"]
+        _write_model_names(target, merging.image_names(first) | merging.image_names(second))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(merging.subprocess, "run", native_merge)
+    merged, report = merging.merge_components(models, tmp_path / "attempts")
+    assert merging.image_names(merged) == set("abcdefgh")
+    assert report["acceptedMerges"] == 2 and report["improvedLargest"]
+    assert merging.image_names(models[0]) == groups[0]
+
+
+def test_rejected_component_alignment_never_forces_a_merge(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import worker.merge as merging
+
+    models = [tmp_path / "a", tmp_path / "b"]
+    for model, names in zip(models, [set("abcde"), set("abcfg")], strict=True):
+        _write_model_names(model, names)
+    monkeypatch.setattr(
+        merging.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1)
+    )
+    _, report = merging.merge_components(models, tmp_path / "attempts")
+    assert report["acceptedMerges"] == 0 and not report["improvedLargest"]
+    assert report["attempts"][0]["sharedImages"] == 3
+
+
+def test_image_index_rejects_incomplete_observations(tmp_path):
+    import struct
+
+    from worker.merge import image_names
+
+    _write_model_names(tmp_path, {"camera-A/frame_000001.jpg"})
+    binary = tmp_path / "images.bin"
+    data = binary.read_bytes()
+    binary.write_bytes(data[:-8] + struct.pack("<Q", 10))
+    with pytest.raises(ValueError, match="observations"):
+        image_names(tmp_path)

@@ -182,3 +182,14 @@ global BA at 1.5 growth ratios (1000-frame / 1000000-point frequency limits),
 without reducing optimization iteration or refinement limits. Registration
 diagnostics are persisted before dense reconstruction. The CLI requests a
 four-hour execution window by default; `--execution-timeout` controls seconds.
+
+Component recovery (joint.3): `--joint --resume-run UUID --merge-components`
+reuses completed sparse models in a fresh run. Shared-image indexes are checked
+without loading 2D observations into memory. COLMAP must validate every alignment
+at an 8-pixel reprojection threshold, with at least three common images, and
+retain the full union of image names. Pairwise merging can join through smaller
+bridge components. A growing merged model receives GPU bundle adjustment before
+dense reconstruction. If no merge increases the largest component, the job
+returns diagnostics without rerendering an unchanged model. Original runs and
+all component binaries remain intact. Diagnostics report unique coverage,
+unregistered images, and component membership.

@@ -116,6 +116,9 @@ def run(payload: dict, worker) -> dict:
         raise ValueError("Joint mode currently runs the full reconstruction pipeline")
     resume = request.get("resume_run")
     previous = None
+    merge = request.get("merge_components", False)
+    if type(merge) is not bool or (merge and (not joint or not resume)):
+        raise ValueError("merge_components requires a retained joint run")
     if resume:
         if not joint:
             raise ValueError("resume_run requires joint mode")
@@ -202,6 +205,10 @@ def run(payload: dict, worker) -> dict:
                 resumeSnapshots=str(confined(previous, "dataset/joint/snapshots")),
                 resumeSourceRun=resume,
             )
+            if merge:
+                if not diagnostics.get("sparseModels"):
+                    raise ValueError("Component merging requires completed sparse mapping")
+                settings["reuseSparseModels"] = str(confined(previous, "dataset/colmap/sparse"))
             atomic_json(settings_path, settings)
         command = [sys.executable, "-u", "-m", "worker.joint", str(dataset)]
     state = {
@@ -292,6 +299,12 @@ def run(payload: dict, worker) -> dict:
         artifacts = (
             {role: str(path) for role, path in worker.select_result_artifacts(dataset).items()}
             if "stages" not in options
+            and not (
+                merge
+                and not json.loads((dataset / "joint/diagnostics.json").read_text())
+                .get("merge", {})
+                .get("improvedLargest")
+            )
             else {}
         )
         if joint and (dataset / "joint/diagnostics.json").is_file():
