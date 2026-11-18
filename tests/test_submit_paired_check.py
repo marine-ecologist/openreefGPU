@@ -74,3 +74,29 @@ def test_temporary_endpoint_keeps_reference_and_cleans_up(tmp_path, monkeypatch,
         == "COMPLETED"
     )
     assert "test-secret-never-print" not in capsys.readouterr().out
+
+
+def test_denied_configuration_reports_stage_without_key(tmp_path, monkeypatch):
+    import urllib.error
+
+    import pytest
+
+    script = Path(__file__).resolve().parents[1] / "scripts/submit-paired-check.py"
+    spec = importlib.util.spec_from_file_location("submit_paired_denied", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+
+    def denied(req, timeout):
+        calls.append(req.get_method())
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden secret-body", {}, None)
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret-test-key")
+    monkeypatch.setattr("sys.argv", [str(script), "--source", "example"])
+    monkeypatch.setattr(module.urllib.request, "urlopen", denied)
+    with pytest.raises(module.RunPodRequestError) as error:
+        module.main()
+    assert "reading reference endpoint configuration (HTTP 403)" in str(error.value)
+    assert "secret-test-key" not in str(error.value)
+    assert "secret-body" not in str(error.value)
+    assert calls == ["GET"]

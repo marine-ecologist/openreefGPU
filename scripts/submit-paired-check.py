@@ -10,6 +10,10 @@ import urllib.request
 from pathlib import Path
 
 
+class RunPodRequestError(RuntimeError):
+    """Credential-free context for a denied API operation."""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -40,19 +44,36 @@ def main():
     if not args.reference_endpoint.isalnum():
         parser.error("Invalid reference endpoint")
 
-    def call(url, body=None, method=None):
+    def call(url, body=None, method=None, *, operation="API request"):
         request = urllib.request.Request(
             url,
             data=json.dumps(body).encode() if body is not None else None,
             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
             method=method,
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            raw = response.read()
-            return json.loads(raw) if raw else None
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read()
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as error:
+            hint = ""
+            if error.code == 403:
+                hint = (
+                    " Check that this key belongs to the endpoint's account and permits "
+                    "endpoint management plus jobs on newly created endpoints. "
+                    "A key restricted to jobs on the original endpoint is insufficient."
+                )
+            elif error.code == 401:
+                hint = " Re-enter an enabled RunPod API key in this terminal."
+            raise RunPodRequestError(
+                f"RunPod denied {operation} (HTTP {error.code}).{hint} No credentials printed."
+            ) from None
 
     control = "https://api.runpod.io/v2/serverless"
-    original = call(control + "/" + args.reference_endpoint)
+    original = call(
+        control + "/" + args.reference_endpoint,
+        operation="reading reference endpoint configuration",
+    )
     if isinstance(original.get("data"), dict):
         original = original["data"]
     gpu = original.get("gpu")
@@ -80,7 +101,7 @@ def main():
         "timeout": args.timeout_hours * 3600000,
         "env": {},
     }
-    endpoint = call(control, body)
+    endpoint = call(control, body, operation="creating the temporary comparison endpoint")
     identity = endpoint["id"]
     print(
         json.dumps(
@@ -102,9 +123,17 @@ def main():
                     "ttl": (args.timeout_hours + 2) * 3600000,
                 },
             },
+            operation="submitting the comparison job",
         )
     except Exception:
-        call(control + "/" + identity, method="DELETE")
+        try:
+            call(
+                control + "/" + identity,
+                method="DELETE",
+                operation="removing the temporary endpoint",
+            )
+        except RunPodRequestError as cleanup_error:
+            print(f"Cleanup needed for temporary endpoint {identity}: {cleanup_error}", flush=True)
         raise
     record = {"endpoint": identity, "job": job["id"], "source": args.source, "image": args.image}
     record_path = Path.cwd() / ("paired-native-" + job["id"] + ".json")
@@ -114,13 +143,17 @@ def main():
         return
     try:
         while True:
-            result = call(api + "/status/" + job["id"])
+            result = call(api + "/status/" + job["id"], operation="checking comparison job status")
             if result["status"] in {"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"}:
                 record["result"] = result
                 record_path.write_text(json.dumps(record, indent=2) + "\n")
                 print(json.dumps(result, indent=2), flush=True)
                 if not args.keep_endpoint:
-                    call(control + "/" + identity, method="DELETE")
+                    call(
+                        control + "/" + identity,
+                        method="DELETE",
+                        operation="removing the temporary endpoint",
+                    )
                     print("Temporary endpoint removed; volume outputs retained.")
                 return 0 if result["status"] == "COMPLETED" else 1
             time.sleep(5)
@@ -135,7 +168,5 @@ def main():
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except urllib.error.HTTPError as error:
-        raise SystemExit(
-            "RunPod API HTTP " + str(error.code) + "; no credentials printed"
-        ) from error
+    except RunPodRequestError as error:
+        raise SystemExit(str(error)) from None
