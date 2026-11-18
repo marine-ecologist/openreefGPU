@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.18)
+project(openreef_paired_baseline LANGUAGES CXX)
+find_package(Ceres REQUIRED)
+add_executable(paired-baseline-ba baseline_ba.cc)
+target_compile_features(paired-baseline-ba PRIVATE cxx_std_17)
+target_link_libraries(paired-baseline-ba PRIVATE Ceres::ceres)
