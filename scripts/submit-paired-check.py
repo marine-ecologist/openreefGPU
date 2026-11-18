@@ -63,7 +63,8 @@ def main():
     gpu = {
         k: v
         for k, v in gpu.items()
-        if k in {"pools", "allowedCudaVersions", "minCudaVersion"} and v not in (None, [])
+        if k in {"pools", "excludedTypes", "allowedCudaVersions", "minCudaVersion"}
+        and v not in (None, [])
     }
     gpu["count"] = 1
     body = {

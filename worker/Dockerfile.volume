@@ -1,7 +1,7 @@
 # Temporary comparison only; production images and dependency versions are unchanged.
 FROM ghcr.io/marine-ecologist/openreef-gpu:0.6.5-gpu.10-joint.4
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake libcudss0-dev-cuda-12 libabsl-dev \
+    build-essential cmake libcudss0-dev-cuda-12 libcudss0-static-cuda-12 libabsl-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY experiments/paired-native/ /opt/paired-native/
 RUN cmake -S /opt/paired-native -B /opt/paired-native/build \

@@ -66,5 +66,19 @@ result has been saved locally. `RUNPOD_API_KEY` is read only from the terminal
 environment and never printed. `--pair-limit N` selects an explicitly reported
 continuous initial check window; it never silently subsamples stations.
 
+The temporary worker requests 500 GB of container disk for recomputable dense
+intermediates. Source images, sparse checkpoints, reports, and logs stay on the
+network volume. Completed GLB, mesh PLY and orthographic PNG/coordinates are
+copied back to the network volume with MD5 verification before success is
+reported. Intermediate `.mvs` projects referring to temporary images are not
+presented as reusable final artifacts.
+
+The uploaded and checksum-verified first comparison can be submitted with:
+
+```sh
+python3 scripts/submit-paired-check.py \
+  --source paired-native-check/BoobyPass-506d3ac4dab6 --wait
+```
+
 Source folders and all earlier runs remain unchanged. All 3 sites are supported
 by the same input structure; only the BoobyPass comparison is prepared initially.
