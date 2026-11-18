@@ -78,3 +78,47 @@ def test_joint_volume_links_all_images_without_requiring_calibration(tmp_path, m
     assert result["metricCalibration"] is False
     for c in "AB":
         assert (Path(result["dataset"]) / f"images/camera-{c}/frame_000000.jpg").is_symlink()
+
+
+def test_database_recovery_is_independent_and_keeps_wal_records(tmp_path):
+    from worker.joint import copy_database
+
+    source, target = tmp_path / "old.db", tmp_path / "new.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE saved (value INTEGER)")
+        conn.execute("INSERT INTO saved VALUES (123)")
+        conn.commit()
+        copy_database(source, target)
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT value FROM saved").fetchone() == (123,)
+        conn.execute("DELETE FROM saved")
+    with sqlite3.connect(source) as conn:
+        assert conn.execute("SELECT value FROM saved").fetchone() == (123,)
+
+
+def test_mapping_checkpoints_preserve_optimization_defaults(tmp_path):
+    from worker.joint import mapper_command
+
+    command = mapper_command(tmp_path, 16, tmp_path / "initial")
+    assert command[command.index("--Mapper.snapshot_frames_freq") + 1] == "100"
+    assert command[command.index("--Mapper.ba_global_frames_ratio") + 1] == "1.5"
+    assert command[-2:] == ["--input_path", str(tmp_path / "initial")]
+    assert not any("max_num_iterations" in flag or "max_refinements" in flag for flag in command)
+
+
+def test_recovery_selects_largest_complete_snapshot(tmp_path):
+    import struct
+
+    from worker.joint import largest_snapshot
+
+    for name, count in [("older", 400), ("newer", 100)]:
+        model = tmp_path / name
+        model.mkdir()
+        for component in ("cameras.bin", "points3D.bin"):
+            (model / component).touch()
+        (model / "images.bin").write_bytes(struct.pack("<Q", count))
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    (incomplete / "images.bin").write_bytes(struct.pack("<Q", 2000))
+    assert largest_snapshot(tmp_path).name == "older"

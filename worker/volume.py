@@ -114,6 +114,23 @@ def run(payload: dict, worker) -> dict:
         extra.extend(["--stages", stages])
     if joint and "stages" in options:
         raise ValueError("Joint mode currently runs the full reconstruction pipeline")
+    resume = request.get("resume_run")
+    previous = None
+    if resume:
+        if not joint:
+            raise ValueError("resume_run requires joint mode")
+        try:
+            uuid.UUID(resume)
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError("resume_run must be a UUID") from error
+        previous = confined(confined(mount, "openreef-runs"), resume)
+        old_state = json.loads((previous / "job.json").read_text())
+        if (old_state.get("mode"), old_state.get("source"), old_state.get("rightSource")) != (
+            "joint",
+            str(folder),
+            str(right),
+        ):
+            raise ValueError("Recovery sources must match the retained joint run")
     # Every invocation, including a RunPod retry, gets a fresh persistent workspace.
     runs = confined(mount, "openreef-runs")
     runs.mkdir(exist_ok=True)
@@ -155,6 +172,37 @@ def run(payload: dict, worker) -> dict:
                 "pipelineCommand": command,
             },
         )
+        if previous:
+            settings_path = config / "settings.json"
+            settings = json.loads(settings_path.read_text())
+            old_settings = json.loads((previous / "dataset/joint/settings.json").read_text())
+            if any(
+                settings[key] != old_settings[key] for key in ("images", "maxImageSize", "overlap")
+            ):
+                raise ValueError("Recovery requires identical images and matching settings")
+            old_manifest = json.loads((previous / "source-manifest.json").read_text())
+            current = [
+                {
+                    "image": str(p.relative_to(images)),
+                    "source": str(p.resolve()),
+                    "size": p.stat().st_size,
+                }
+                for p in images.rglob("*")
+                if p.is_file()
+            ]
+            if sorted(current, key=lambda x: x["image"]) != sorted(
+                old_manifest["files"], key=lambda x: x["image"]
+            ):
+                raise ValueError("Recovery source manifest has changed")
+            diagnostics = json.loads((previous / "dataset/joint/diagnostics.json").read_text())
+            if not diagnostics.get("verifiedCrossCameraPairs"):
+                raise ValueError("Recovery requires completed cross-camera matching")
+            settings.update(
+                reuseDatabase=str(confined(previous, "dataset/colmap/database.db")),
+                resumeSnapshots=str(confined(previous, "dataset/joint/snapshots")),
+                resumeSourceRun=resume,
+            )
+            atomic_json(settings_path, settings)
         command = [sys.executable, "-u", "-m", "worker.joint", str(dataset)]
     state = {
         "id": run_id,
@@ -170,6 +218,8 @@ def run(payload: dict, worker) -> dict:
     }
     if joint:
         state["rightSource"] = str(right)
+        if resume:
+            state["resumedFrom"] = resume
         state["metricCalibration"] = False
     status = workspace / "job.json"
     atomic_json(status, state)

@@ -4,10 +4,10 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 
 def main():
@@ -22,7 +22,10 @@ def main():
     parser.add_argument(
         "--joint", action="store_true", help="Estimate two cameras without a fixed rig"
     )
-    parser.add_argument("--right-folder", help="Second camera for a calibrated stereo run")
+    parser.add_argument(
+        "--right-folder",
+        help="Second camera source folder for joint or calibrated stereo reconstruction",
+    )
     parser.add_argument("--profile", help="Calibration JSON path relative to openreef-sources")
     parser.add_argument("--timestamps", help="Timing JSON path relative to openreef-sources")
     parser.add_argument("--max-image-size", type=int)
@@ -34,6 +37,10 @@ def main():
         "--count", type=int, help="Consecutive image subset size (single camera only)"
     )
     parser.add_argument("--start", type=int, default=0, help="Zero-based image offset")
+    parser.add_argument("--resume-run", help="Retained joint run UUID with completed matching")
+    parser.add_argument(
+        "--execution-timeout", type=int, default=14400, help="Maximum execution seconds"
+    )
     parser.add_argument("--wait", action="store_true")
     args = parser.parse_args()
     if not args.endpoint.isalnum():
@@ -74,6 +81,10 @@ def main():
                 volume["profile"] = args.profile
             if args.timestamps:
                 volume["timestamps"] = args.timestamps
+        if args.resume_run:
+            if not args.joint:
+                parser.error("--resume-run requires --joint")
+            volume["resume_run"] = args.resume_run
         payload = {
             "schema_version": 1,
             "openreef_version": versions["openreef"]["version"],
@@ -91,7 +102,16 @@ def main():
                 if getattr(args, k) is not None
             },
         }
-        result = call("/run", {"input": payload})
+        result = call(
+            "/run",
+            {
+                "input": payload,
+                "policy": {
+                    "executionTimeout": args.execution_timeout * 1000,
+                    "ttl": (args.execution_timeout + 7200) * 1000,
+                },
+            },
+        )
         print(json.dumps({"folder": folder, **result}), flush=True)
         pending.append(result["id"])
     failed = False
@@ -115,4 +135,4 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except urllib.error.HTTPError as error:
-        raise SystemExit(f"RunPod request failed: HTTP {error.code}")
+        raise SystemExit(f"RunPod request failed: HTTP {error.code}") from error

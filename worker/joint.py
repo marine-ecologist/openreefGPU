@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +42,57 @@ def verify_cameras(database: Path) -> dict:
         }
 
 
+def copy_database(source: Path, destination: Path) -> None:
+    """Take a consistent SQLite snapshot without changing the retained source."""
+    with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src:
+        with sqlite3.connect(destination) as dst:
+            src.backup(dst)
+
+
+def largest_snapshot(root: Path) -> Path | None:
+    candidates = []
+    for binary in root.glob("*/images.bin"):
+        if all((binary.parent / name).is_file() for name in ("cameras.bin", "points3D.bin")):
+            with binary.open("rb") as stream:
+                count = struct.unpack("<Q", stream.read(8))[0]
+            candidates.append((count, str(binary.parent), binary.parent))
+    return max(candidates)[2] if candidates else None
+
+
+def mapper_command(dataset: Path, cores: int, initial: Path | None = None) -> list[str]:
+    command = [
+        "colmap",
+        "mapper",
+        "--database_path",
+        str(dataset / "colmap/database.db"),
+        "--image_path",
+        str(dataset / "images"),
+        "--output_path",
+        str(dataset / "colmap/sparse"),
+        "--Mapper.num_threads",
+        str(cores),
+        "--Mapper.ba_use_gpu",
+        "1",
+        "--Mapper.ba_gpu_index",
+        "-1",
+        "--Mapper.ba_global_frames_ratio",
+        "1.5",
+        "--Mapper.ba_global_points_ratio",
+        "1.5",
+        "--Mapper.ba_global_frames_freq",
+        "1000",
+        "--Mapper.ba_global_points_freq",
+        "1000000",
+        "--Mapper.snapshot_path",
+        str(dataset / "joint/snapshots"),
+        "--Mapper.snapshot_frames_freq",
+        "100",
+    ]
+    if initial:
+        command += ["--input_path", str(initial)]
+    return command
+
+
 def run(dataset: Path) -> None:
     config = dataset / "joint"
     settings = json.loads((config / "settings.json").read_text())
@@ -50,28 +103,35 @@ def run(dataset: Path) -> None:
         print("Command: " + json.dumps(command), flush=True)
         subprocess.run(command, check=True)
 
-    execute(
-        [
-            "colmap",
-            "feature_extractor",
-            "--database_path",
-            str(database),
-            "--image_path",
-            str(dataset / "images"),
-            "--ImageReader.camera_model",
-            "OPENCV",
-            "--ImageReader.single_camera",
-            "0",
-            "--ImageReader.single_camera_per_folder",
-            "1",
-            "--FeatureExtraction.num_threads",
-            str(settings["cores"]),
-            "--FeatureExtraction.max_image_size",
-            str(settings["maxImageSize"]),
-            "--FeatureExtraction.use_gpu",
-            "1",
-        ]
-    )
+    reused = settings.get("reuseDatabase")
+    if reused:
+        copy_database(Path(reused), database)
+        print(
+            "Reusing verified features and matches from " + settings["resumeSourceRun"], flush=True
+        )
+    else:
+        execute(
+            [
+                "colmap",
+                "feature_extractor",
+                "--database_path",
+                str(database),
+                "--image_path",
+                str(dataset / "images"),
+                "--ImageReader.camera_model",
+                "OPENCV",
+                "--ImageReader.single_camera",
+                "0",
+                "--ImageReader.single_camera_per_folder",
+                "1",
+                "--FeatureExtraction.num_threads",
+                str(settings["cores"]),
+                "--FeatureExtraction.max_image_size",
+                str(settings["maxImageSize"]),
+                "--FeatureExtraction.use_gpu",
+                "1",
+            ]
+        )
     diagnostic = verify_cameras(database)
     if diagnostic["imageCount"] != len(settings["images"]):
         raise RuntimeError("Not all source images were extracted")
@@ -80,22 +140,23 @@ def run(dataset: Path) -> None:
     pair_file.write_text("".join(f"{a} {b}\n" for a, b in pairs))
     diagnostic["candidatePairs"] = len(pairs)
     (config / "diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
-    execute(
-        [
-            "colmap",
-            "matches_importer",
-            "--database_path",
-            str(database),
-            "--match_list_path",
-            str(pair_file),
-            "--match_type",
-            "pairs",
-            "--FeatureMatching.use_gpu",
-            "1",
-            "--FeatureMatching.num_threads",
-            str(settings["cores"]),
-        ]
-    )
+    if not reused:
+        execute(
+            [
+                "colmap",
+                "matches_importer",
+                "--database_path",
+                str(database),
+                "--match_list_path",
+                str(pair_file),
+                "--match_type",
+                "pairs",
+                "--FeatureMatching.use_gpu",
+                "1",
+                "--FeatureMatching.num_threads",
+                str(settings["cores"]),
+            ]
+        )
     with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as conn:
         diagnostic["verifiedPairs"] = conn.execute(
             "SELECT COUNT(*) FROM two_view_geometries WHERE rows > 0"
@@ -113,16 +174,16 @@ def run(dataset: Path) -> None:
     (config / "diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
     if not diagnostic["verifiedCrossCameraPairs"]:
         raise RuntimeError("No verified matches connect the two cameras")
-    execute(
-        settings["pipelineCommand"]
-        + [
-            "--no-single-camera",
-            "--camera-model",
-            "OPENCV",
-            "--stages",
-            "sparse,markertags,undistort,openmvs_import,dense,mesh,texture",
-        ]
-    )
+    sparse = dataset / "colmap/sparse"
+    sparse.mkdir()
+    (config / "snapshots").mkdir()
+    initial = None
+    if settings.get("resumeSnapshots"):
+        snapshot = largest_snapshot(Path(settings["resumeSnapshots"]))
+        if snapshot:
+            initial = config / "initial-model"
+            shutil.copytree(snapshot, initial)
+    execute(mapper_command(dataset, settings["cores"], initial))
 
     from openreef.io.markertags import read_registered_images
 
@@ -146,6 +207,38 @@ def run(dataset: Path) -> None:
         max(models, key=lambda m: m["registeredImages"])["registeredBySource"]
     ) != {"camera-A", "camera-B"}:
         raise RuntimeError("The largest sparse reconstruction does not include both cameras")
+
+    from openreef.pipeline.stages import sparse_model_score
+    from openreef.pipeline.tasks import _create_point_profiles
+
+    complete = [Path(item["path"]) for item in models]
+    for model in complete:
+        cloud = model / "points3D.ply"
+        execute(
+            [
+                "colmap",
+                "model_converter",
+                "--input_path",
+                str(model),
+                "--output_path",
+                str(cloud),
+                "--output_type",
+                "PLY",
+            ]
+        )
+        _create_point_profiles(cloud, "compact", 20, 5, 1)
+    selected = max(complete, key=sparse_model_score)
+    (sparse / "selected").symlink_to(selected.name, target_is_directory=True)
+    execute(
+        settings["pipelineCommand"]
+        + [
+            "--no-single-camera",
+            "--camera-model",
+            "OPENCV",
+            "--stages",
+            "markertags,undistort,openmvs_import,dense,mesh,texture",
+        ]
+    )
 
 
 if __name__ == "__main__":

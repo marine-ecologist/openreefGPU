@@ -165,3 +165,20 @@ are linked, remain unmodified, and are not downloaded. Both camera identities an
 cross-camera matches are checked. `dataset/joint/diagnostics.json` records camera IDs,
 verified matches and registration counts for each sparse model. This mode runs the full
 pipeline and currently rejects partial-stage requests. It requires the joint-enabled image.
+
+For the audio-aligned BoobyPass run, replace the right folder with
+`aligned/BoobyPass-2026-11-12/B-plus-2frames-v1`. B was extracted from video frames
+`2 + 30*n` at 30000/1001 fps; A reuses its original one-second stills. Six audio
+windows support a relative alignment residual of approximately 0.8–6.7 ms across
+the recording, subject to camera audio/video latency. The originals remain intact.
+The current joint worker image is `0.6.5-gpu.10-joint.1`.
+
+
+Recovery (joint.2): pass `--resume-run UUID` with identical source folders,
+image size and overlap. A consistent SQLite backup reuses verified matching in a
+fresh persistent run. The largest complete previous mapping snapshot is used if
+available. Mapping saves snapshots every 100 registered images and schedules
+global BA at 1.5 growth ratios (1000-frame / 1000000-point frequency limits),
+without reducing optimization iteration or refinement limits. Registration
+diagnostics are persisted before dense reconstruction. The CLI requests a
+four-hour execution window by default; `--execution-timeout` controls seconds.
