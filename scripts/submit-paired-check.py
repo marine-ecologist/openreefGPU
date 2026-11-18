@@ -46,6 +46,9 @@ def main():
     parser.add_argument(
         "--image", default="ghcr.io/marine-ecologist/openreef-gpu:0.6.5-gpu.10-paired-native.1"
     )
+    parser.add_argument(
+        "--endpoint", help="Submit to an existing comparison endpoint; no management API calls"
+    )
     parser.add_argument("--pair-limit", type=int)
     parser.add_argument("--products", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--cores", type=int, default=16)
@@ -67,6 +70,9 @@ def main():
         parser.error("Invalid timeout or core count")
     if not args.reference_endpoint.isalnum():
         parser.error("Invalid reference endpoint")
+
+    if args.endpoint and (not args.endpoint.isalnum() or args.endpoint == args.reference_endpoint):
+        parser.error("Use a separate paired-native endpoint, not the production reference endpoint")
 
     def call(url, body=None, method=None, *, operation="API request"):
         request = urllib.request.Request(
@@ -103,14 +109,22 @@ def main():
     control = "https://api.runpod.io/v2/serverless"
     if args.diagnose:
         failed = False
-        for label, url in (
+        checks = (
             ("management list", control),
             ("reference configuration", control + "/" + args.reference_endpoint),
             (
                 "existing endpoint job access",
                 "https://api.runpod.ai/v2/" + args.reference_endpoint + "/health",
             ),
-        ):
+        )
+        if args.endpoint:
+            checks = (
+                (
+                    "comparison endpoint job access",
+                    "https://api.runpod.ai/v2/" + args.endpoint + "/health",
+                ),
+            )
+        for label, url in checks:
             try:
                 call(url, operation=label)
                 print(json.dumps({"check": label, "result": "OK"}), flush=True)
@@ -118,45 +132,56 @@ def main():
                 failed = True
                 print(json.dumps({"check": label, "error": str(error)}), flush=True)
         return int(failed)
-    original = call(
-        control + "/" + args.reference_endpoint,
-        operation="reading reference endpoint configuration",
-    )
-    if isinstance(original.get("data"), dict):
-        original = original["data"]
-    gpu = original.get("gpu")
-    if not gpu or not gpu.get("pools"):
-        raise RuntimeError(
-            "Reference endpoint has no readable GPU pool configuration; nothing was changed"
+    owned_endpoint = not bool(args.endpoint)
+    if args.endpoint:
+        identity = args.endpoint
+        print(
+            json.dumps({"existingComparisonEndpoint": identity, "managementApiUsed": False}),
+            flush=True,
         )
-    gpu = {
-        k: v
-        for k, v in gpu.items()
-        if k in {"pools", "excludedTypes", "allowedCudaVersions", "minCudaVersion"}
-        and v not in (None, [])
-    }
-    gpu["count"] = 1
-    body = {
-        "name": "openreef-paired-native-check-" + str(int(time.time())),
-        "image": args.image,
-        "type": "QUEUE",
-        "gpu": gpu,
-        "workers": {"min": 0, "max": 1, "idleTimeout": 5},
-        "scaling": {"type": "QUEUE_DELAY", "queueDelay": 4},
-        "dataCenterIds": ["US-NE-1"],
-        "mounts": {"network": [{"volumeId": "s8baqr2m12"}]},
-        "disk": 500,
-        "timeout": args.timeout_hours * 3600000,
-        "env": {},
-    }
-    endpoint = call(control, body, operation="creating the temporary comparison endpoint")
-    identity = endpoint["id"]
-    print(
-        json.dumps(
-            {"temporaryEndpoint": identity, "referenceEndpointUnchanged": args.reference_endpoint}
-        ),
-        flush=True,
-    )
+    else:
+        original = call(
+            control + "/" + args.reference_endpoint,
+            operation="reading reference endpoint configuration",
+        )
+        if isinstance(original.get("data"), dict):
+            original = original["data"]
+        gpu = original.get("gpu")
+        if not gpu or not gpu.get("pools"):
+            raise RuntimeError(
+                "Reference endpoint has no readable GPU pool configuration; nothing was changed"
+            )
+        gpu = {
+            k: v
+            for k, v in gpu.items()
+            if k in {"pools", "excludedTypes", "allowedCudaVersions", "minCudaVersion"}
+            and v not in (None, [])
+        }
+        gpu["count"] = 1
+        body = {
+            "name": "openreef-paired-native-check-" + str(int(time.time())),
+            "image": args.image,
+            "type": "QUEUE",
+            "gpu": gpu,
+            "workers": {"min": 0, "max": 1, "idleTimeout": 5},
+            "scaling": {"type": "QUEUE_DELAY", "queueDelay": 4},
+            "dataCenterIds": ["US-NE-1"],
+            "mounts": {"network": [{"volumeId": "s8baqr2m12"}]},
+            "disk": 500,
+            "timeout": args.timeout_hours * 3600000,
+            "env": {},
+        }
+        endpoint = call(control, body, operation="creating the temporary comparison endpoint")
+        identity = endpoint["id"]
+        print(
+            json.dumps(
+                {
+                    "temporaryEndpoint": identity,
+                    "referenceEndpointUnchanged": args.reference_endpoint,
+                }
+            ),
+            flush=True,
+        )
     payload = {"source": args.source, "products": args.products, "cores": args.cores}
     if args.pair_limit is not None:
         payload["pair_limit"] = args.pair_limit
@@ -174,14 +199,17 @@ def main():
             operation="submitting the comparison job",
         )
     except Exception:
-        try:
-            call(
-                control + "/" + identity,
-                method="DELETE",
-                operation="removing the temporary endpoint",
-            )
-        except RunPodRequestError as cleanup_error:
-            print(f"Cleanup needed for temporary endpoint {identity}: {cleanup_error}", flush=True)
+        if owned_endpoint:
+            try:
+                call(
+                    control + "/" + identity,
+                    method="DELETE",
+                    operation="removing the temporary endpoint",
+                )
+            except RunPodRequestError as cleanup_error:
+                print(
+                    f"Cleanup needed for temporary endpoint {identity}: {cleanup_error}", flush=True
+                )
         raise
     record = {"endpoint": identity, "job": job["id"], "source": args.source, "image": args.image}
     record_path = Path.cwd() / ("paired-native-" + job["id"] + ".json")
@@ -196,7 +224,7 @@ def main():
                 record["result"] = result
                 record_path.write_text(json.dumps(record, indent=2) + "\n")
                 print(json.dumps(result, indent=2), flush=True)
-                if not args.keep_endpoint:
+                if owned_endpoint and not args.keep_endpoint:
                     call(
                         control + "/" + identity,
                         method="DELETE",

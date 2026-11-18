@@ -4,8 +4,11 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
 
-def test_temporary_endpoint_keeps_reference_and_cleans_up(tmp_path, monkeypatch, capsys):
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_temporary_endpoint_keeps_reference_and_cleans_up(tmp_path, monkeypatch, capsys, existing):
     script = Path(__file__).resolve().parents[1] / "scripts/submit-paired-check.py"
     spec = importlib.util.spec_from_file_location("submit_paired_check", script)
     module = importlib.util.module_from_spec(spec)
@@ -62,13 +65,19 @@ def test_temporary_endpoint_keeps_reference_and_cleans_up(tmp_path, monkeypatch,
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("RUNPOD_API_KEY", "test-secret-never-print")
-    monkeypatch.setattr(
-        "sys.argv", [str(script), "--source", "paired-native-check/example", "--wait"]
-    )
+    argv = [str(script), "--source", "paired-native-check/example", "--wait"]
+    if existing:
+        argv += ["--endpoint", "temporary123"]
+    monkeypatch.setattr("sys.argv", argv)
     monkeypatch.setattr(module.urllib.request, "urlopen", request)
     assert module.main() == 0
     assert all(method == "GET" for method, url, _ in calls if url.endswith("/93jkogjuc9l6pu"))
-    assert calls[-1][0] == "DELETE"
+    if existing:
+        assert calls[-1][0] == "GET"
+        assert all("api.runpod.ai/" in url for _, url, _ in calls)
+        assert all(method != "DELETE" for method, _, _ in calls)
+    else:
+        assert calls[-1][0] == "DELETE"
     assert (
         json.loads((tmp_path / "paired-native-job123.json").read_text())["result"]["status"]
         == "COMPLETED"
@@ -78,8 +87,6 @@ def test_temporary_endpoint_keeps_reference_and_cleans_up(tmp_path, monkeypatch,
 
 def test_denied_configuration_reports_stage_without_key(tmp_path, monkeypatch):
     import urllib.error
-
-    import pytest
 
     script = Path(__file__).resolve().parents[1] / "scripts/submit-paired-check.py"
     spec = importlib.util.spec_from_file_location("submit_paired_denied", script)

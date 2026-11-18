@@ -82,3 +82,14 @@ python3 scripts/submit-paired-check.py \
 
 Source folders and all earlier runs remain unchanged. All 3 sites are supported
 by the same input structure; only the BoobyPass comparison is prepared initially.
+
+### Job-only API key
+
+If the key lacks `serverless:read`, create a separate Queue endpoint in the console
+with the published paired-native image, the US-NE-1 network volume `s8baqr2m12`,
+500 GB container disk, a 48 GB GPU pool, min 0/max 1 workers, 5 s idle timeout,
+and 8 h execution timeout. Then add `--endpoint NEW_ID` to the submission command.
+This mode calls only the job API; it neither reads nor changes endpoint settings
+and never deletes the supplied endpoint. Its image and storage must be configured
+in the console. `--endpoint NEW_ID --diagnose` checks only that endpoint's job API.
+The production reference endpoint ID is rejected to prevent using its older worker.
