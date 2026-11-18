@@ -100,3 +100,33 @@ def test_denied_configuration_reports_stage_without_key(tmp_path, monkeypatch):
     assert "secret-test-key" not in str(error.value)
     assert "secret-body" not in str(error.value)
     assert calls == ["GET"]
+
+
+def test_diagnostic_is_read_only_and_redacts_server_detail(monkeypatch, capsys):
+    import io
+    import urllib.error
+
+    script = Path(__file__).resolve().parents[1] / "scripts/submit-paired-check.py"
+    spec = importlib.util.spec_from_file_location("submit_paired_diagnostic", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+
+    def rejected(req, timeout):
+        calls.append(req.get_method())
+        assert req.get_header("User-agent").startswith("Mozilla/5.0")
+        assert req.get_header("Authorization") == "Bearer test-secret"
+        raw = json.dumps(
+            {"title": "Forbidden", "detail": "test-secret rpa_other-secret scope missing"}
+        ).encode()
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(raw))
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "  test-secret  ")
+    monkeypatch.setattr("sys.argv", [str(script), "--diagnose"])
+    monkeypatch.setattr(module.urllib.request, "urlopen", rejected)
+    assert module.main() == 1
+    assert calls == ["GET", "GET", "GET"]
+    output = capsys.readouterr().out
+    assert "scope missing" in output
+    assert "test-secret" not in output
+    assert "rpa_other-secret" not in output

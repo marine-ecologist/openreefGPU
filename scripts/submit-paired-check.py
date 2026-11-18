@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -14,11 +15,29 @@ class RunPodRequestError(RuntimeError):
     """Credential-free context for a denied API operation."""
 
 
+def rejection_detail(error, key):
+    raw = error.read(8192).decode("utf-8", errors="replace")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        if "1010" in raw or "cloudflare" in raw.lower():
+            return "Request rejected by the network filter (Cloudflare)."
+        return "Non-JSON rejection from the server or network filter."
+    if not isinstance(data, dict):
+        return ""
+    parts = [
+        str(data[k])
+        for k in ("title", "detail", "message", "code")
+        if isinstance(data.get(k), (str, int))
+    ]
+    text = " | ".join(parts).replace(key, "[redacted]")
+    text = re.sub(r"\b(?:rpa|rps)_[A-Za-z0-9_-]+", "[redacted]", text)
+    return " ".join(text.split())[:400]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--source", required=True, help="Permanent folder relative to openreef-sources"
-    )
+    parser.add_argument("--source", help="Permanent folder relative to openreef-sources")
     parser.add_argument(
         "--reference-endpoint",
         default="93jkogjuc9l6pu",
@@ -33,10 +52,15 @@ def main():
     parser.add_argument("--timeout-hours", type=int, default=8)
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--keep-endpoint", action="store_true")
+    parser.add_argument(
+        "--diagnose", action="store_true", help="Check access only; creates no endpoints or jobs"
+    )
     args = parser.parse_args()
-    key = os.environ.get("RUNPOD_API_KEY")
+    key = os.environ.get("RUNPOD_API_KEY", "").strip()
     if not key:
         parser.error("Set RUNPOD_API_KEY in this terminal first")
+    if not args.source and not args.diagnose:
+        parser.error("--source is required unless using --diagnose")
     if args.pair_limit is not None and args.pair_limit < 3:
         parser.error("--pair-limit must be at least 3")
     if not 1 <= args.timeout_hours <= 12 or not 1 <= args.cores <= 64:
@@ -48,7 +72,12 @@ def main():
         request = urllib.request.Request(
             url,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer " + key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 OpenReefGPU/0.6.5",
+            },
             method=method,
         )
         try:
@@ -56,6 +85,7 @@ def main():
                 raw = response.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as error:
+            detail = rejection_detail(error, key)
             hint = ""
             if error.code == 403:
                 hint = (
@@ -66,10 +96,28 @@ def main():
             elif error.code == 401:
                 hint = " Re-enter an enabled RunPod API key in this terminal."
             raise RunPodRequestError(
-                f"RunPod denied {operation} (HTTP {error.code}).{hint} No credentials printed."
+                f"RunPod denied {operation} (HTTP {error.code}). {detail}{hint}"
+                " No credentials printed."
             ) from None
 
     control = "https://api.runpod.io/v2/serverless"
+    if args.diagnose:
+        failed = False
+        for label, url in (
+            ("management list", control),
+            ("reference configuration", control + "/" + args.reference_endpoint),
+            (
+                "existing endpoint job access",
+                "https://api.runpod.ai/v2/" + args.reference_endpoint + "/health",
+            ),
+        ):
+            try:
+                call(url, operation=label)
+                print(json.dumps({"check": label, "result": "OK"}), flush=True)
+            except RunPodRequestError as error:
+                failed = True
+                print(json.dumps({"check": label, "error": str(error)}), flush=True)
+        return int(failed)
     original = call(
         control + "/" + args.reference_endpoint,
         operation="reading reference endpoint configuration",
