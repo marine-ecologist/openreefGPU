@@ -58,7 +58,7 @@ def test_joint_volume_links_all_images_without_requiring_calibration(tmp_path, m
         if settings.get("reuseSparseModels"):
             assert Path(settings["reuseSparseModels"]).name == "sparse"
             (dataset / "joint/diagnostics.json").write_text(
-                json.dumps({"merge": {"improvedLargest": False}})
+                json.dumps({"merge": {"improvedLargest": False, "renderSkipped": True}})
             )
         script = (
             'from pathlib import Path; import sys; p=Path(sys.argv[1])/"models"; '

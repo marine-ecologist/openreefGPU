@@ -193,3 +193,8 @@ dense reconstruction. If no merge increases the largest component, the job
 returns diagnostics without rerendering an unchanged model. Original runs and
 all component binaries remain intact. Diagnostics report unique coverage,
 unregistered images, and component membership.
+
+Joint.4 skips automatic marker scanning and metric scaling for estimated-camera
+video runs, because no tag-size calibration was supplied. Outputs remain in
+arbitrary scene units. Component recovery renders the original largest model
+if no valid merge improves it and the previous run has no rendered model yet.

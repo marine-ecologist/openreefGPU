@@ -209,6 +209,7 @@ def run(payload: dict, worker) -> dict:
                 if not diagnostics.get("sparseModels"):
                     raise ValueError("Component merging requires completed sparse mapping")
                 settings["reuseSparseModels"] = str(confined(previous, "dataset/colmap/sparse"))
+                settings["renderIfNoMerge"] = not bool(old_state.get("artifacts", {}).get("model"))
             atomic_json(settings_path, settings)
         command = [sys.executable, "-u", "-m", "worker.joint", str(dataset)]
     state = {
@@ -301,9 +302,9 @@ def run(payload: dict, worker) -> dict:
             if "stages" not in options
             and not (
                 merge
-                and not json.loads((dataset / "joint/diagnostics.json").read_text())
+                and json.loads((dataset / "joint/diagnostics.json").read_text())
                 .get("merge", {})
-                .get("improvedLargest")
+                .get("renderSkipped")
             )
             else {}
         )

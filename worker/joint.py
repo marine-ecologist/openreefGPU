@@ -230,39 +230,42 @@ def run(dataset: Path) -> None:
         )
         diagnostic["merge"] = report
         (config / "diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
-        if not report["improvedLargest"]:
+        if not report["improvedLargest"] and not settings.get("renderIfNoMerge"):
+            report["renderSkipped"] = True
+            (config / "diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
             print(
                 "No geometrically validated merge improved the retained model; no dense rerun",
                 flush=True,
             )
             return
-        target = sparse / "merged"
-        shutil.copytree(merged, target)
-        execute(
-            [
-                "colmap",
-                "bundle_adjuster",
-                "--input_path",
-                str(target),
-                "--output_path",
-                str(target),
-                "--BundleAdjustmentCeres.use_gpu",
-                "1",
-                "--BundleAdjustmentCeres.gpu_index",
-                "-1",
-            ]
-        )
-        registered = image_names(target)
-        models.append(
-            {
-                "path": str(target),
-                "registeredImages": len(registered),
-                "registeredBySource": {
-                    cam: sum(name.startswith(cam + "/") for name in registered)
-                    for cam in ("camera-A", "camera-B")
-                },
-            }
-        )
+        if report["improvedLargest"]:
+            target = sparse / "merged"
+            shutil.copytree(merged, target)
+            execute(
+                [
+                    "colmap",
+                    "bundle_adjuster",
+                    "--input_path",
+                    str(target),
+                    "--output_path",
+                    str(target),
+                    "--BundleAdjustmentCeres.use_gpu",
+                    "1",
+                    "--BundleAdjustmentCeres.gpu_index",
+                    "-1",
+                ]
+            )
+            registered = image_names(target)
+            models.append(
+                {
+                    "path": str(target),
+                    "registeredImages": len(registered),
+                    "registeredBySource": {
+                        cam: sum(name.startswith(cam + "/") for name in registered)
+                        for cam in ("camera-A", "camera-B")
+                    },
+                }
+            )
     diagnostic["sparseModels"] = models
     (config / "diagnostics.json").write_text(json.dumps(diagnostic, indent=2) + "\n")
     if not models or set(
@@ -298,7 +301,7 @@ def run(dataset: Path) -> None:
             "--camera-model",
             "OPENCV",
             "--stages",
-            "markertags,undistort,openmvs_import,dense,mesh,texture",
+            "undistort,openmvs_import,dense,mesh,texture",
         ]
     )
 
