@@ -1,18 +1,31 @@
 # openreefGPU
 
 `openreefGPU` is the cloud edition of [OpenReef](https://github.com/marine-ecologist/openreef).
-It provides a browser workflow, a Cloudflare API broker, and scale-to-zero RunPod GPU processing.
+It provides a browser workflow, a Cloudflare API broker, and RunPod GPU processing with local result downloads.
 The OpenReef desktop repository remains the source of truth for reconstruction and model-generation
 code.
 
 ```text
-Browser → Google Drive → Cloudflare API → RunPod GPU
-        → pinned OpenReef pipeline → GLB → browser viewer
+Browser → API broker → RunPod network volume → RunPod GPU
+        → pinned OpenReef pipeline → local results archive
 ```
 
 See [Gaussian viewer](GAUSSIAN_VIEWER.md) for optional cloud splat rendering and compatible output paths.
 
-## Live deployment
+## OpenReef v0.7 stereo video
+
+**Configure & Run** now defaults to two GoPro MP4s. See the
+[Quarto user manual](docs/openreef-user-manual.qmd) for capture, calibration, upload recovery,
+frame review, downloads and local setup. The
+[extraction specification](docs/STEREO_VIDEO_EXTRACTION.md) describes the timing method.
+
+The stereo-video build uses cloud package `0.6.5-gpu.12`. Browser jobs upload to RunPod's
+network volume, save results locally, and can purge completed jobs after download.
+See the [RunPod volume deployment guide](docs/RUNPOD_VIDEO_VOLUME.md).
+
+## Legacy hosted deployment
+
+These addresses describe the previous release. For the direct-volume workflow, use the updated worker and broker described above.
 
 - Browser: <https://marine-ecologist.github.io/openreefGPU/>
 - API broker: <https://openreef-gpu-api.openreef-gpu.workers.dev/v1/health>
@@ -33,8 +46,7 @@ Cloudflare Access before treating the URL as an unattended public service.
 - Pipeline fixes belong in OpenReef first. openreefGPU consumes a released OpenReef commit; it does
   not maintain a second drifting copy of the pipeline.
 
-The current cloud release is `0.6.5-gpu.9`, based on OpenReef `0.6.5`. The suffix may advance for
-cloud-only changes (`gpu.4`, `gpu.5`, `gpu.6`) without pretending the desktop pipeline changed.
+The cloud package is based on OpenReef `0.6.5`. The GPU suffix tracks cloud-only changes.
 
 ## Version contract
 
@@ -109,6 +121,9 @@ For repeated cloud benchmarks, attach a Runpod volume to the endpoint. The worke
 uses `/runpod-volume/openreef-source-cache`: the first run fills it from Google Drive, and later runs
 stage matching source images from the persistent cache. The browser reports cache hits and staging
 time; compute-only benchmark totals continue to exclude source transfer and output upload.
+
+For Drive-free iterations against photographs already on the network volume, see
+[Direct volume runs](VOLUME_RUNS.md).
 
 ## RunPod image
 

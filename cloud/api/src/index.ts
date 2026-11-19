@@ -1,4 +1,5 @@
 import { StorageError, storageForEnv, type StorageEnv } from './storage';
+import { VIDEO_PART_BYTES, type RunpodStorage } from './runpod-storage';
 
 interface Env extends StorageEnv {
   ALLOWED_ORIGINS: string;
@@ -14,9 +15,11 @@ type JobState =
   | 'uploading'
   | 'queued'
   | 'running'
+  | 'review'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'purged';
 
 interface JobFile {
   name: string;
@@ -43,6 +46,22 @@ interface StereoConfig {
   loopInterval: number;
   loopNeighbors: number;
   timestamps?: Record<string, Record<string, number>>;
+}
+
+interface StereoVideoConfig {
+  referenceCamera: 'A' | 'B';
+  originalNames: string[];
+  intervalSeconds: number;
+  maxPairs: number;
+  jpegQuality: number;
+  reviewPairs: boolean;
+  colourCorrection: boolean;
+  profile?: StereoConfig['profile'];
+}
+
+interface StageAsset {
+  stage: string;
+  name: string;
 }
 
 interface TransferMetric {
@@ -81,6 +100,15 @@ interface JobRecord {
   outputMode?: 'compact' | 'full';
   includeSourceImages?: boolean;
   stereo?: StereoConfig;
+  stereoVideo?: StereoVideoConfig;
+  volumeUploads?: Record<number, string>;
+  purgeJobId?: string;
+  videoUploads?: Record<number, { uploadUrl: string; expiresAt: string }>;
+  stageAssets?: StageAsset[];
+  syncWarnings?: string[];
+  pairCount?: number;
+  excludedPairs?: number[];
+  reviewed?: boolean;
   sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
   source?: {
     kind: 'job-upload' | 'storage-folder';
@@ -99,6 +127,7 @@ interface JobRecord {
     manifest: string;
     project?: string;
     gaussian?: string;
+    bundle?: string;
     stereo_diagnostics?: string;
     rig_profile?: string;
     stereo_matching?: string;
@@ -153,15 +182,22 @@ const worker = {
       }
       if (parts[0] === 'v1' && parts[1] === 'jobs' && isJobId(parts[2])) {
         const jobId = parts[2];
-        if (request.method === 'POST' && parts[3] === 'uploads' && parts.length === 4) {
-          return json(await createUploadSession(request, jobId, env), 200, cors);
+        if (parts[3] === 'uploads' && parts.length === 6 && request.method === 'PUT') {
+          return json(await uploadVolumePart(request, env, jobId, Number(parts[4]), Number(parts[5])), 200, cors);
+        }
+        if (parts[3] === 'purge' && parts.length === 4 && request.method === 'POST') {
+          return json(await purgeJob(request, env, jobId), 202, cors);
+        }
+        if (parts[3] === 'uploads' && parts.length === 4) {
+          if (request.method === 'GET') return json(await videoUploadProgress(jobId, env), 200, cors);
+          if (request.method === 'POST') return json(await createUploadSession(request, jobId, env), 200, cors);
         }
         if (
           request.method === 'POST' &&
           parts[3] === 'start' &&
           parts.length === 4
         ) {
-          return json(await startJob(jobId, env), 202, cors);
+          return json(await startJob(request, jobId, env), 202, cors);
         }
         if (request.method === 'GET' && parts.length === 3) {
           return json(await getJob(jobId, env), 200, cors);
@@ -276,6 +312,8 @@ async function createJob(request: Request, env: Env) {
     name?: unknown;
     files?: unknown;
     stereo?: unknown;
+    stereoVideo?: unknown;
+    requireRunpod?: unknown;
     sourceFolder?: unknown;
     maxFiles?: unknown;
     outputMode?: unknown;
@@ -299,6 +337,10 @@ async function createJob(request: Request, env: Env) {
   if (stereo && (body.sourceFolder !== undefined || body.files !== undefined)) {
     throw new HttpError(400, 'Stereo sources are specified by leftFolder and rightFolder');
   }
+  const video = body.stereoVideo === undefined ? undefined : validateStereoVideo(body.stereoVideo, body.files);
+  if (video && (stereo || body.sourceFolder !== undefined || body.uploadProtocol !== 'per-file')) {
+    throw new HttpError(400, 'Stereo video requires two direct video uploads');
+  }
   const name = cleanDatasetName(body.name);
   let endpointId = env.RUNPOD_ENDPOINT_ID;
   let endpointName = 'Default OpenReef endpoint';
@@ -313,6 +355,18 @@ async function createJob(request: Request, env: Env) {
     endpointName = endpoint.name;
   }
   const storage = storageForEnv(env);
+  if (body.requireRunpod === true && storage.provider !== 'runpod') {
+    throw new HttpError(503, 'This API is not configured for RunPod volume storage');
+  }
+  if (video && !['runpod', 'google-drive'].includes(storage.provider)) {
+    throw new HttpError(400, 'Stereo video uploads require a configured RunPod volume');
+  }
+  if (storage.provider === 'runpod' && !video) {
+    throw new HttpError(400, 'Choose two GoPro MP4s for volume processing');
+  }
+  if (storage.provider === 'runpod' && endpointId !== env.RUNPOD_ENDPOINT_ID) {
+    throw new HttpError(400, 'Choose the endpoint attached to the configured network volume');
+  }
   const sourceFolder =
     stereo ? stereo.leftFolder : body.sourceFolder === undefined
       ? undefined
@@ -325,7 +379,7 @@ async function createJob(request: Request, env: Env) {
     : sourceFolder
     ? await filesFromStorageFolder(storage, sourceFolder, body.maxFiles)
     : undefined;
-  const files = sourceSelection ? sourceSelection.files : validateFiles(body.files);
+  const files = video?.files ?? (sourceSelection ? sourceSelection.files : validateFiles(body.files));
   const perFileUploads = !sourceFolder && body.uploadProtocol === 'per-file';
   if (!sourceFolder && !perFileUploads && files.length > 4) {
     throw new HttpError(400, 'Reload the updated website to upload more than four photos using per-file upload sessions');
@@ -337,7 +391,7 @@ async function createJob(request: Request, env: Env) {
     id,
     name,
     state: 'uploading',
-    stage: 'Uploading source images',
+    stage: video ? 'Stage 0 — Upload & prepare' : 'Uploading source images',
     progress: 0,
     createdAt: now,
     updatedAt: now,
@@ -346,6 +400,7 @@ async function createJob(request: Request, env: Env) {
     runpodEndpointName: endpointName,
     sourceSummary: sourceSelection?.summary,
     stereo,
+    stereoVideo: video?.config,
     source,
     outputMode: body.outputMode === 'full' ? 'full' : 'compact',
     includeSourceImages: body.outputMode === 'full' && body.includeSourceImages === true,
@@ -399,7 +454,7 @@ async function createJob(request: Request, env: Env) {
   record.timings!.total.elapsedSeconds = preparation.elapsedSeconds;
   if (!sourceFolder) {
     record.timings!.steps.push({
-      name: 'Browser → Drive upload',
+      name: storage.provider === 'runpod' ? 'Browser → RunPod volume upload' : 'Browser → Drive upload',
       state: 'running',
       startedAt: preparedAt,
       elapsedSeconds: 0,
@@ -417,23 +472,159 @@ async function createUploadSession(request: Request, jobId: string, env: Env) {
   const storage = storageForEnv(env);
   const job = await storage.readJson<JobRecord>(`${jobFolder(jobId)}/job.json`);
   if (job.state !== 'uploading' || job.source?.kind === 'storage-folder') {
-    throw new HttpError(409, 'This job is not accepting photo uploads');
+    throw new HttpError(409, 'This job is not accepting uploads');
   }
   const body = await parseJson<{ fileIndex?: unknown }>(request);
   if (!Number.isInteger(body.fileIndex) || (body.fileIndex as number) < 0 || (body.fileIndex as number) >= job.files.length) {
     throw new HttpError(400, 'Invalid upload file index');
   }
-  const file = job.files[body.fileIndex as number];
+  const index = body.fileIndex as number;
+  const file = job.files[index];
+  if (job.stereoVideo && storage.provider === 'runpod') {
+    return volumeUploadSession(storage as RunpodStorage, env, job, index);
+  }
+  if (job.stereoVideo) {
+    const existing = (await storage.listFiles(`${jobFolder(jobId)}/input`))
+      .find((item) => item.name === file.name && item.size === file.size && item.md5Checksum);
+    if (existing) return { name: file.name, size: file.size, offset: file.size };
+    const saved = job.videoUploads?.[index];
+    const offset = await savedUploadOffset(saved, file.size);
+    if (offset !== undefined) return { name: file.name, size: file.size, ...saved, offset };
+  }
   const session = await storage.createBrowserUpload(
     `${jobFolder(jobId)}/input/${file.name}`, file.size, file.contentType,
   );
-  return { name: file.name, size: file.size, ...session };
+  if (job.stereoVideo) {
+    job.videoUploads = { ...job.videoUploads, [index]: session };
+    await writeJob(env, job);
+  }
+  return { name: file.name, size: file.size, ...session, offset: 0 };
 }
 
-async function startJob(jobId: string, env: Env) {
+async function volumeUploadSession(storage: RunpodStorage, env: Env, job: JobRecord, index: number) {
+  const file = job.files[index];
+  const target = { name: file.name, size: file.size, partBytes: VIDEO_PART_BYTES };
+  const path = `${jobFolder(job.id)}/input/${file.name}`;
+  if ((await storage.listFiles(`${jobFolder(job.id)}/input`)).some(item =>
+    item.name === file.name && item.size === file.size)) return { ...target, offset: file.size };
+
+  let uploadId = job.volumeUploads?.[index];
+  if (!uploadId) {
+    uploadId = await storage.beginVideo(path);
+    job.volumeUploads = { ...job.volumeUploads, [index]: uploadId };
+    await writeJob(env, job);
+  }
+  const parts = await storage.videoParts(path, uploadId);
+  const offset = committedVideoBytes(parts, file.size);
+  if (offset === file.size) await storage.finishVideo(path, uploadId, parts);
+  return { ...target, offset, partPath: `/v1/jobs/${job.id}/uploads/${index}` };
+}
+
+function committedVideoBytes(parts: { number: number; size: number }[], total: number) {
+  let offset = 0;
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    const expected = Math.min(VIDEO_PART_BYTES, total - offset);
+    if (part.number !== index + 1 || expected <= 0 || part.size !== expected) {
+      throw new HttpError(409, 'Incomplete or invalid RunPod multipart sequence');
+    }
+    offset += part.size;
+  }
+  return offset;
+}
+
+async function uploadVolumePart(request: Request, env: Env, jobId: string, index: number, part: number) {
+  const storage = storageForEnv(env);
+  if (storage.provider !== 'runpod') throw new HttpError(404, 'Volume upload unavailable');
+  const job = await readJob(env, jobId);
+  const file = job.files[index];
+  const uploadId = job.volumeUploads?.[index];
+  if (job.state !== 'uploading' || !job.stereoVideo || !file || !uploadId) {
+    throw new HttpError(409, 'Start or resume the upload session first');
+  }
+  const offset = (part - 1) * VIDEO_PART_BYTES;
+  const length = Math.min(VIDEO_PART_BYTES, file.size - offset);
+  if (!Number.isSafeInteger(part) || part < 1 || length <= 0 ||
+      Number(request.headers.get('Content-Length')) !== length) {
+    throw new HttpError(400, 'Invalid video part number or length');
+  }
+  const volume = storage as RunpodStorage;
+  const path = `${jobFolder(jobId)}/input/${file.name}`;
+  const before = await volume.videoParts(path, uploadId);
+  const committed = committedVideoBytes(before, file.size);
+  if (offset > committed) throw new HttpError(409, 'Resume from the last committed part');
+  if (offset === committed) {
+    const bytes = await request.arrayBuffer();
+    if (bytes.byteLength !== length) throw new HttpError(400, 'Incorrect video part length');
+    await volume.putVideoPart(path, uploadId, part, bytes);
+  }
+  if (offset + length === file.size) {
+    const parts = await volume.videoParts(path, uploadId);
+    if (committedVideoBytes(parts, file.size) !== file.size) {
+      throw new HttpError(409, 'RunPod has not committed all video parts');
+    }
+    await volume.finishVideo(path, uploadId, parts);
+  }
+  return { offset: Math.max(committed, offset + length) };
+}
+
+async function savedUploadOffset(session: NonNullable<JobRecord['videoUploads']>[number] | undefined, size: number) {
+  if (!session || Date.parse(session.expiresAt) <= Date.now()) return undefined;
+  // Query Drive here so its committed byte range is available regardless of browser CORS.
+  const status = await fetch(session.uploadUrl, {
+    method: 'PUT', body: '',
+    headers: { 'Content-Range': `bytes */${size}` },
+    redirect: 'manual',
+  });
+  const range = /^bytes=0-(\d+)$/.exec(status.headers.get('Range') ?? '');
+  await status.body?.cancel();
+  if (status.ok) return size;
+  if (status.status === 308) {
+    const offset = range ? Number(range[1]) + 1 : 0;
+    if (offset <= size) return offset;
+  }
+  if ([404, 410].includes(status.status)) return undefined;
+  throw new HttpError(502, 'Could not check the saved video upload. Retry shortly.');
+}
+
+async function videoUploadProgress(jobId: string, env: Env) {
+  const job = await readJob(env, jobId);
+  if (!job.stereoVideo) throw new HttpError(404, 'Video upload not found');
+  if (job.state !== 'uploading') return { offsets: job.files.map(file => file.size) };
+  const storage = storageForEnv(env);
+  const children = await storage.listFiles(`${jobFolder(jobId)}/input`);
+  if (storage.provider === 'runpod') {
+    const offsets = await Promise.all(job.files.map(async (file, index) => {
+      if (children.some(item => item.name === file.name && item.size === file.size)) return file.size;
+      const id = job.volumeUploads?.[index];
+      return id ? committedVideoBytes(await (storage as RunpodStorage).videoParts(
+        `${jobFolder(jobId)}/input/${file.name}`, id), file.size) : 0;
+    }));
+    return { offsets };
+  }
+  const offsets = await Promise.all(job.files.map(async (file, index) => {
+    if (children.some(item => item.name === file.name && item.size === file.size && item.md5Checksum)) return file.size;
+    return (await savedUploadOffset(job.videoUploads?.[index], file.size)) ?? 0;
+  }));
+  return { offsets };
+}
+
+async function startJob(request: Request, jobId: string, env: Env) {
   let job = await readJob(env, jobId);
-  if (job.state !== 'uploading') {
+  const previousState = job.state;
+  const retry = job.stereoVideo && ['review', 'failed', 'cancelled'].includes(previousState);
+  if (previousState !== 'uploading' && !retry) {
     throw new HttpError(409, `Job is already ${job.state}`);
+  }
+  if (previousState === 'review') {
+    const { excluded } = await parseJson<{ excluded?: unknown }>(request);
+    if (!job.pairCount || !Array.isArray(excluded) ||
+        !excluded.every(pair => Number.isInteger(pair) && pair >= 1 && pair <= job.pairCount!)) {
+      throw new HttpError(400, 'Exclude pairs using their numbers in pairs.csv');
+    }
+    job.excludedPairs = Array.from(new Set<number>(excluded));
+    if (job.pairCount - job.excludedPairs.length < 2) throw new HttpError(400, 'Keep at least two pairs');
+    job.reviewed = true;
   }
   const storage = storageForEnv(env);
   const children = job.stereo
@@ -462,6 +653,17 @@ async function startJob(jobId: string, env: Env) {
     );
   }
 
+  if (job.stereoVideo) {
+    job.files = job.files.map((file) => {
+      const item = children.find((candidate) => candidate.name === file.name && candidate.size === file.size);
+      if (!item?.id || (storage.provider !== 'runpod' && !item.md5Checksum)) throw new HttpError(409, 'Waiting for storage to verify both video uploads');
+      return { ...file, sourceId: item.id, sourceName: item.name, sourceMd5: item.md5Checksum };
+    });
+    delete job.videoUploads;
+    delete job.volumeUploads;
+    // Persist verified identities before the worker can read the record.
+    if (previousState === 'uploading') await writeJob(env, job);
+  }
   const endpointId = job.runpodEndpointId || env.RUNPOD_ENDPOINT_ID;
   // Revalidate explicit alternatives in case they were disabled or removed
   // while the user was uploading. Never silently move a job to another endpoint.
@@ -479,6 +681,7 @@ async function startJob(jobId: string, env: Env) {
       input: {
         schema_version: 1,
         job_id: jobId,
+        ...(storage.provider === 'runpod' ? { volume_job: true } : {}),
         name: job.name,
         profile: job.outputMode ?? 'compact',
         openreef_version: job.versions.openreef,
@@ -510,6 +713,8 @@ async function startJob(jobId: string, env: Env) {
     startedAt: queuedAt,
     elapsedSeconds: 0,
   });
+  job.timings.total.state = 'running';
+  delete job.timings.total.completedAt;
   job.timings.total.elapsedSeconds = elapsedSeconds(
     job.timings.total.startedAt,
     queuedAt,
@@ -517,6 +722,7 @@ async function startJob(jobId: string, env: Env) {
   job = {
     ...job,
     state: 'queued',
+    error: undefined,
     stage: 'Waiting for a GPU worker',
     progress: 1,
     runpodJobId: result.id,
@@ -530,7 +736,7 @@ async function startJob(jobId: string, env: Env) {
 async function listJobs(env: Env, cursor?: string) {
   if (cursor && cursor.length > 4096) throw new HttpError(400, 'Invalid jobs cursor');
   const storage = storageForEnv(env);
-  if (!storage.listJobFolders) throw new HttpError(400, 'Project browsing requires Google Drive storage');
+  if (!storage.listJobFolders) throw new HttpError(400, 'Job history is unavailable for this storage provider');
   const page = await storage.listJobFolders(cursor);
   let skipped = 0;
   const jobs = [];
@@ -557,17 +763,34 @@ async function listJobs(env: Env, cursor?: string) {
 
 async function getJob(jobId: string, env: Env) {
   let job = await readJob(env, jobId);
+  if (job.state === 'completed' && job.result?.bundle) {
+    const cleanup = await readCleanup(env, jobId);
+    if (cleanup.id) {
+      const status = await runpodStatus(env, cleanup.id, job.runpodEndpointId);
+      job = await readJob(env, jobId);
+      if (job.state !== 'purged') {
+        if (['FAILED', 'TIMED_OUT', 'CANCELLED', 'COMPLETED'].includes(status.status ?? '')) {
+          const error = status.error || 'Volume cleanup did not finish. Try the purge again.';
+          await storageForEnv(env).writeJson(`${jobFolder(jobId)}/cleanup.json`, { error });
+          return publicJob({ ...job, error }, env);
+        }
+        return publicJob({ ...job, purgeJobId: cleanup.id }, env);
+      }
+    } else if (cleanup.error) {
+      return publicJob({ ...job, error: cleanup.error }, env);
+    }
+  }
   if (
     job.runpodJobId &&
-    !['completed', 'failed', 'cancelled'].includes(job.state)
+    !['completed', 'failed', 'cancelled', 'review', 'purged'].includes(job.state)
   ) {
     const status = await runpodStatus(env, job.runpodJobId, job.runpodEndpointId);
     const state = mapRunpodState(status.status);
-    if (state && state !== job.state) {
+    if (state && state !== job.state && (!job.stereoVideo || ['completed', 'failed', 'cancelled'].includes(state))) {
       // The GPU worker writes richer stage/progress updates. Only persist a
       // provider terminal state when it has not already done so.
       job = await readJob(env, jobId);
-      if (!['completed', 'failed', 'cancelled'].includes(job.state)) {
+      if (!['completed', 'failed', 'cancelled', 'review', 'purged'].includes(job.state)) {
         job.state = state;
         job.stage = state === 'running' ? 'Reconstructing reef model' : state;
         job.progress =
@@ -582,6 +805,45 @@ async function getJob(jobId: string, env: Env) {
   return publicJob(job, env);
 }
 
+async function readCleanup(env: Env, id: string) {
+  try {
+    return await storageForEnv(env).readJson<{ id?: string; error?: string }>(
+      `${jobFolder(id)}/cleanup.json`,
+    );
+  } catch (error) {
+    if (error instanceof StorageError && error.status === 404) return {};
+    throw error;
+  }
+}
+
+async function purgeJob(request: Request, env: Env, id: string) {
+  const { localCopyVerified } = await parseJson<{ localCopyVerified?: boolean }>(request);
+  if (localCopyVerified !== true || storageForEnv(env).provider !== 'runpod') {
+    throw new HttpError(400, 'Confirm that you saved and verified the local results archive');
+  }
+  const job = await readJob(env, id);
+  if (job.state === 'purged') return publicJob(job, env);
+  if (job.state !== 'completed' || !job.result?.bundle) {
+    throw new HttpError(409, 'Only a completed job with a download bundle can be purged');
+  }
+  const pending = await readCleanup(env, id);
+  if (pending.id) return publicJob({ ...job, purgeJobId: pending.id }, env);
+  const response = await fetch(`${RUNPOD_ROOT}/${job.runpodEndpointId ?? env.RUNPOD_ENDPOINT_ID}/run`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: {
+      schema_version: 1, job_id: id, volume_job: true, action: 'purge',
+      openreef_version: job.versions.openreef, openreef_gpu_version: job.versions.openreefGPU,
+    } }),
+  });
+  const result = await response.json<{ id?: string }>();
+  if (!response.ok || !result.id) throw new HttpError(502, 'RunPod rejected the purge request');
+  const current = await readJob(env, id);
+  if (current.state === 'purged') return publicJob(current, env);
+  await storageForEnv(env).writeJson(`${jobFolder(id)}/cleanup.json`, { id: result.id });
+  return publicJob({ ...current, purgeJobId: result.id, error: undefined }, env);
+}
+
 async function proxyAsset(
   request: Request,
   env: Env,
@@ -593,9 +855,10 @@ async function proxyAsset(
     throw new HttpError(400, 'Invalid asset name');
   const job = await readJob(env, jobId);
   const allowed = new Set(
-    [job.result?.model, job.result?.manifest, job.result?.project, job.result?.gaussian, job.result?.stereo_diagnostics, job.result?.rig_profile, job.result?.stereo_matching].filter(Boolean),
+    [job.result?.bundle, job.result?.model, job.result?.manifest, job.result?.project, job.result?.gaussian, job.result?.stereo_diagnostics, job.result?.rig_profile, job.result?.stereo_matching].filter(Boolean),
   );
-  if (job.state !== 'completed' || !allowed.has(fileName)) {
+  const stageAsset = job.stageAssets?.some(asset => asset.name === fileName);
+  if (!stageAsset && (job.state !== 'completed' || !allowed.has(fileName))) {
     throw new HttpError(404, 'Asset not found');
   }
   const upstream = await storageForEnv(env).readFile(
@@ -619,10 +882,10 @@ async function proxyAsset(
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
-  if (fileName === job.result?.project) {
+  if (stageAsset || fileName === job.result?.project || storageForEnv(env).provider === 'runpod') {
     responseHeaders.set('Content-Disposition', `attachment; filename="${fileName}"`);
   }
-  responseHeaders.set('Cache-Control', 'private, max-age=3600');
+  responseHeaders.set('Cache-Control', storageForEnv(env).provider === 'runpod' ? 'private, no-store' : fileName.endsWith('.log') ? 'private, no-cache' : 'private, max-age=3600');
   return new Response(upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
@@ -667,13 +930,24 @@ function publicJob(job: JobRecord, env: Env) {
     id: job.id,
     name: job.name,
     state: job.state,
-    stage: job.stage,
+    stage: job.purgeJobId ? 'Purging RunPod files' : job.stage,
+    purging: Boolean(job.purgeJobId),
     progress: job.progress,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     error: job.error,
     outputMode: job.outputMode ?? 'compact',
     sourceSummary: job.sourceSummary,
+    videoFiles: job.stereoVideo ? job.files.map((file, index) => ({
+      name: job.stereoVideo!.originalNames[index], size: file.size,
+      verified: Boolean(file.sourceId && (file.sourceMd5 || storage.provider === 'runpod')),
+    })) : undefined,
+    syncWarnings: job.syncWarnings,
+    pairCount: job.pairCount,
+    reviewed: job.reviewed,
+    stageAssets: job.stageAssets?.map(asset => ({
+      ...asset, url: `${assetBase}/${encodeURIComponent(asset.name)}`,
+    })),
     stereo: job.stereo ? { cameras: job.stereo.profile.cameras.map(c => c.id) } : undefined,
     runtime: job.runpodEndpointId ? { endpointId: job.runpodEndpointId, name: job.runpodEndpointName ?? 'OpenReef endpoint' } : undefined,
     transfers: job.transfers,
@@ -684,6 +958,7 @@ function publicJob(job: JobRecord, env: Env) {
           rigProfileUrl: job.result.rig_profile ? `${assetBase}/${encodeURIComponent(job.result.rig_profile)}` : undefined,
           stereoMatchingUrl: job.result.stereo_matching ? `${assetBase}/${encodeURIComponent(job.result.stereo_matching)}` : undefined,
           gaussianUrl: job.result.gaussian ? `${assetBase}/${encodeURIComponent(job.result.gaussian)}` : undefined,
+          bundleUrl: job.result.bundle ? `${assetBase}/${encodeURIComponent(job.result.bundle)}` : undefined,
           modelUrl: `${assetBase}/${encodeURIComponent(job.result.model)}`,
           manifestUrl: `${assetBase}/${encodeURIComponent(job.result.manifest)}`,
           projectUrl: job.result.project ? `${assetBase}/${encodeURIComponent(job.result.project)}` : undefined,
@@ -735,6 +1010,45 @@ async function readJob(env: Env, jobId: string): Promise<JobRecord> {
 
 async function writeJob(env: Env, job: JobRecord): Promise<void> {
   await storageForEnv(env).writeJson(`${jobFolder(job.id)}/job.json`, job);
+}
+
+function validateStereoVideo(value: unknown, files: unknown) {
+  if (!value || typeof value !== 'object' || !Array.isArray(files) || files.length !== 2) {
+    throw new HttpError(400, 'Choose one video for Camera A and one for Camera B');
+  }
+  const raw = value as StereoVideoConfig;
+  if (raw.referenceCamera !== 'A' && raw.referenceCamera !== 'B') {
+    throw new HttpError(400, 'Choose the physical camera corresponding to the left/reference camera');
+  }
+  if (!Number.isFinite(raw.intervalSeconds) || raw.intervalSeconds < 0.1 || raw.intervalSeconds > 120 ||
+      !Number.isInteger(raw.maxPairs) || raw.maxPairs < 2 || raw.maxPairs > 2000 ||
+      !Number.isInteger(raw.jpegQuality) || raw.jpegQuality < 1 || raw.jpegQuality > 2 ||
+      (raw.reviewPairs !== undefined && typeof raw.reviewPairs !== 'boolean') ||
+      (raw.colourCorrection !== undefined && typeof raw.colourCorrection !== 'boolean')) {
+    throw new HttpError(400, 'Invalid extraction interval, pair limit or JPEG quality');
+  }
+  const config: StereoVideoConfig = {
+    referenceCamera: raw.referenceCamera, originalNames: [],
+    intervalSeconds: raw.intervalSeconds, maxPairs: raw.maxPairs, jpegQuality: raw.jpegQuality,
+    reviewPairs: raw.reviewPairs === true, colourCorrection: raw.colourCorrection === true,
+  };
+  if (raw.profile !== undefined) {
+    config.profile = validateStereo({ leftFolder: 'left', rightFolder: 'right', profile: raw.profile }).profile;
+  }
+  let total = 0;
+  const validated = files.map((item, index): JobFile => {
+    if (!item || typeof item !== 'object') throw new HttpError(400, 'Invalid video metadata');
+    const original = cleanFileName(item.name);
+    if (!/\.mp4$/i.test(original) || !Number.isSafeInteger(item.size) || item.size < 1) {
+      throw new HttpError(400, 'Each source must be a nonempty GoPro MP4');
+    }
+    total += item.size;
+    if (total > MAX_TOTAL_SIZE) throw new HttpError(413, 'The video upload is larger than 50 GiB');
+    config.originalNames.push(original);
+    const cameraId = index === 0 ? 'A' : 'B';
+    return { name: `camera-${cameraId}.mp4`, size: item.size, contentType: 'video/mp4', cameraId };
+  });
+  return { config, files: validated };
 }
 
 function validateStereo(value: unknown): StereoConfig {
@@ -805,8 +1119,14 @@ async function stereoFiles(storage: ReturnType<typeof storageForEnv>, stereo: St
   const files = streams.flatMap((stream, index) => stream.files.map(file => ({
     ...file, cameraId: stereo.profile.cameras[index].id,
   })));
-  if (files.length > MAX_FILES || files.reduce((sum, f) => sum + f.size, 0) > MAX_TOTAL_SIZE) {
-    throw new HttpError(413, 'Combined stereo source exceeds the job limit');
+  // The form and folder selector apply MAX_FILES to each physical camera.
+  const maxStereoFiles = MAX_FILES * stereo.profile.cameras.length;
+  if (files.length > maxStereoFiles) {
+    throw new HttpError(413, `Stereo sources contain ${files.length} photos; the limit is ${MAX_FILES} per camera (${maxStereoFiles} total)`);
+  }
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalSize > MAX_TOTAL_SIZE) {
+    throw new HttpError(413, `Combined stereo source is ${(totalSize / 1024 ** 3).toFixed(2)} GiB; the job limit is 50 GiB. Reduce Maximum photos per camera.`);
   }
   if (new Set(files.map(file => file.sourceId)).size !== files.length || files.some(f => !f.sourceId)) {
     throw new HttpError(400, 'Stereo folders must contain separate images with stable Drive IDs');
@@ -987,7 +1307,7 @@ function isJobId(value?: string): value is string {
 function corsHeaders(origin: string | null, env: Env): Headers {
   const headers = new Headers({
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
     'Access-Control-Expose-Headers':
       'Content-Length, Content-Range, Accept-Ranges, ETag',
     'Access-Control-Max-Age': '86400',

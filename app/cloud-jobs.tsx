@@ -1,24 +1,19 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   CloudUpload,
   Cpu,
-  FolderOpen,
   LoaderCircle,
-  RotateCcw,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-
-import { ReefViewer } from './reef-viewer';
 
 const API_URL = (process.env.NEXT_PUBLIC_OPENREEF_API_URL ?? '').replace(
   /\/$/,
   '',
 );
-const UPLOAD_CHUNK_BYTES = 10 * 1024 * 1024;
 
 type TimingMetric = {
   name?: string;
@@ -35,17 +30,25 @@ type CloudJob = {
     | 'uploading'
     | 'queued'
     | 'running'
+    | 'review'
     | 'completed'
     | 'failed'
-    | 'cancelled';
+    | 'cancelled'
+    | 'purged';
+  purging?: boolean;
   stage: string;
   progress: number;
   error?: string;
   outputMode?: 'compact' | 'full';
+  videoFiles?: { name: string; size: number; verified: boolean }[];
+  stageAssets?: { stage: string; name: string; url: string }[];
+  syncWarnings?: string[];
+  pairCount?: number;
+  reviewed?: boolean;
   sourceSummary?: { duplicateCopiesSkipped: number; renamedFiles: number };
   runtime?: { endpointId: string; name: string };
-  result?: { modelUrl: string; gaussianUrl?: string; manifestUrl: string; projectUrl?: string; stereoDiagnosticsUrl?: string; rigProfileUrl?: string; stereoMatchingUrl?: string };
-  storage?: { provider: 'google-drive' | 'sharepoint'; root: string };
+  result?: { bundleUrl?: string; modelUrl: string; gaussianUrl?: string; manifestUrl: string; projectUrl?: string; stereoDiagnosticsUrl?: string; rigProfileUrl?: string; stereoMatchingUrl?: string };
+  storage?: { provider: 'runpod'; root: string };
   versions?: { openreef: string; openreefGPU: string };
   transfers?: {
     sourceDownload?: {
@@ -72,7 +75,9 @@ type CloudJob = {
 type UploadTarget = {
   name: string;
   size: number;
-  uploadUrl: string;
+  partPath?: string;
+  partBytes?: number;
+  offset?: number;
 };
 
 type CreateJobResponse = { job: CloudJob; uploads: UploadTarget[]; uploadSessionPath?: string };
@@ -84,28 +89,31 @@ type RuntimeCatalog = { endpoints: RuntimeEndpoint[]; checkedAt: string; warning
 
 export function CloudJobs() {
   const [name, setName] = useState('New reef survey');
-  const [sourceMode, setSourceMode] = useState<'drive' | 'upload' | 'stereo'>('drive');
-  const [rightFolder, setRightFolder] = useState('camera-right');
+  const [videos, setVideos] = useState<(File | null)[]>([null, null]);
+  const [videoProgress, setVideoProgress] = useState([{ bytes: 0, rate: 0 }, { bytes: 0, rate: 0 }]);
+  const [calibrated, setCalibrated] = useState(false);
+  const [referenceCamera, setReferenceCamera] = useState<'A' | 'B'>('B');
+  const [interval, setIntervalSeconds] = useState(1);
+  const [maxPairs, setMaxPairs] = useState(300);
+  const [jpegQuality, setJpegQuality] = useState(2);
+  const [reviewPairs, setReviewPairs] = useState(false);
+  const [colourCorrection, setColourCorrection] = useState(false);
+  const [excludedPairs, setExcludedPairs] = useState('');
+  const [localCopyVerified, setLocalCopyVerified] = useState(false);
+  const [autoDownload, setAutoDownload] = useState(false);
+  const retrieved = useRef(new Set<string>());
   const [rigProfile, setRigProfile] = useState('');
-  const [pairTolerance, setPairTolerance] = useState(30);
-  const [rightOffset, setRightOffset] = useState(0);
-  const [driveFolder, setDriveFolder] = useState('images');
-  const [driveLimit, setDriveLimit] = useState(30);
   const [outputMode, setOutputMode] = useState<'compact' | 'full'>('compact');
   const [includeSourceImages, setIncludeSourceImages] = useState(false);
-  const [files, setFiles] = useState<File[]>([]);
   const [job, setJob] = useState<CloudJob | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showViewer, setShowViewer] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
   const [runtimeCatalog, setRuntimeCatalog] = useState<RuntimeCatalog | null>(null);
   const [runtimeId, setRuntimeId] = useState('');
   const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [runtimeError, setRuntimeError] = useState('');
   const [runtimeRefresh, setRuntimeRefresh] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!API_URL) return;
@@ -122,11 +130,6 @@ export function CloudJobs() {
     return () => { cancelAnimationFrame(frame); controller.abort(); };
   }, [runtimeRefresh]);
 
-  const totalBytes = useMemo(
-    () => files.reduce((total, file) => total + file.size, 0),
-    [files],
-  );
-
   useEffect(() => {
     const jobId = new URLSearchParams(window.location.search).get('job');
     if (!jobId || !/^[0-9a-f-]{36}$/i.test(jobId)) return;
@@ -135,8 +138,15 @@ export function CloudJobs() {
     api<CloudJob>(`/v1/jobs/${jobId}`)
       .then((next) => {
         if (cancelled) return;
+        if (next.storage?.provider !== 'runpod') throw new Error('This job is outside the RunPod volume workflow.');
         setJob(next);
-        if (next.state === 'completed' && next.result) setShowViewer(true);
+        if (next.state === 'uploading' && next.videoFiles) {
+          api<{ offsets: number[] }>(`/v1/jobs/${jobId}/uploads`)
+            .then(({ offsets }) => {
+              if (!cancelled) setVideoProgress(offsets.map(bytes => ({ bytes, rate: 0 })));
+            })
+            .catch(() => { /* Resume retrieves the committed offsets again. */ });
+        }
       })
       .catch((reason) => {
         if (cancelled) return;
@@ -156,7 +166,7 @@ export function CloudJobs() {
   }, []);
 
   useEffect(() => {
-    if (!job || !['queued', 'running'].includes(job.state)) return;
+    if (!job || (!job.purging && !['queued', 'running'].includes(job.state))) return;
     const timer = window.setInterval(async () => {
       try {
         const next = await api<CloudJob>(`/v1/jobs/${job.id}`);
@@ -176,30 +186,21 @@ export function CloudJobs() {
     return () => window.clearInterval(timer);
   }, [job]);
 
-  if (showViewer && job?.result) {
-    return (
-      <>
-        <ReefViewer
-          cloudModel={{
-            url: absoluteApiUrl(job.result.modelUrl),
-            gaussianUrl: job.result.gaussianUrl ? absoluteApiUrl(job.result.gaussianUrl) : undefined,
-            label: job.name,
-            source: `openreefGPU ${job.versions?.openreefGPU ?? ''} · ${storageLabel(job)} job ${job.id.slice(0, 8)}`,
-          }}
-        />
-        <Button
-          className="cloud-new-job"
-          variant="outline"
-          onClick={() => setShowViewer(false)}
-        >
-          <RotateCcw data-icon="inline-start" /> Job details
-        </Button>
-      </>
-    );
-  }
+  useEffect(() => {
+    if (!autoDownload || !job) return;
+    for (const asset of job.stageAssets ?? []) {
+      if (!/^stage-\d+\.tar\.gz$/.test(asset.name) || retrieved.current.has(asset.url)) continue;
+      retrieved.current.add(asset.url);
+      const link = document.createElement('a');
+      link.href = absoluteApiUrl(asset.url);
+      link.download = asset.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+  }, [autoDownload, job]);
 
-  const progress =
-    job?.state === 'uploading' ? uploadProgress : (job?.progress ?? 0);
+  const progress = job?.progress ?? 0;
   const sourceDownload = job?.transfers?.sourceDownload;
   const timings = job?.timings;
 
@@ -210,22 +211,14 @@ export function CloudJobs() {
       );
       return;
     }
-    if (sourceMode === 'upload' && files.length < 2) {
-      setError('Choose at least two overlapping reef photographs.');
-      return;
-    }
-    if (sourceMode !== 'upload' && !driveFolder.trim()) {
-      setError('Enter the folder containing the Drive photographs.');
+    if (videos.some(file => !file)) {
+      setError('Choose one GoPro MP4 for each camera.');
       return;
     }
     let stereoProfile: unknown;
-    if (sourceMode === 'stereo') {
-      if (!rightFolder.trim()) {
-        setError('Enter the right camera folder.');
-        return;
-      }
+    if (calibrated) {
       if (!rigProfile.trim()) {
-        setError('Choose a calibrated rig profile (.json) before submitting a stereo survey. The two photo folders alone do not provide the rig calibration.');
+        setError('Choose an existing calibrated rig profile.');
         return;
       }
       try {
@@ -241,7 +234,7 @@ export function CloudJobs() {
     }
     setSubmitting(true);
     setError(null);
-    setUploadProgress(0);
+    setLocalCopyVerified(false);
     try {
       const created = await api<CreateJobResponse>('/v1/jobs', {
         method: 'POST',
@@ -249,51 +242,22 @@ export function CloudJobs() {
           name,
           outputMode,
           includeSourceImages: outputMode === 'full' && includeSourceImages,
-          uploadProtocol: sourceMode === 'upload' ? 'per-file' : undefined,
+          uploadProtocol: 'per-file',
+          requireRunpod: true,
           runpodEndpointId: runtimeId || undefined,
-          ...(sourceMode === 'stereo'
-            ? { stereo: { leftFolder: driveFolder, rightFolder,
-                  profile: stereoProfile, maxDeltaMs: pairTolerance,
-                  rightOffsetMs: rightOffset }, maxFiles: driveLimit }
-            : sourceMode === 'drive'
-            ? { sourceFolder: driveFolder, maxFiles: driveLimit }
-            : {
-                files: files.map((file) => ({
-                  name: file.name,
-                  size: file.size,
-                  contentType: file.type || 'application/octet-stream',
-                })),
-              }),
+          stereoVideo: { referenceCamera, intervalSeconds: interval, maxPairs,
+            jpegQuality, reviewPairs, colourCorrection, profile: stereoProfile },
+          files: videos.map(file => ({ name: file!.name, size: file!.size })),
         }),
       });
-      if (outputMode === 'full' && created.job.outputMode !== 'full') {
-        throw new Error('Full project requires the updated cloud API and worker. Update the deployment before submitting this job.');
+      if (created.job.storage?.provider !== 'runpod') {
+        throw new Error('Connect this app to the updated RunPod volume API.');
       }
       setJob(created.job);
-      let uploadedBytes = 0;
-      const uploadCount = created.uploadSessionPath ? files.length : created.uploads.length;
-      for (let index = 0; index < uploadCount; index++) {
-        const target = created.uploadSessionPath
-          ? await api<UploadTarget>(created.uploadSessionPath, {
-              method: 'POST', body: JSON.stringify({ fileIndex: index }),
-            })
-          : created.uploads[index];
-        const file = files.find((candidate) => candidate.name === target.name);
-        if (!file)
-          throw new Error(
-            `The selected file ${target.name} is no longer available.`,
-          );
-        await uploadFile(file, target.uploadUrl, (fileBytes) => {
-          setUploadProgress(
-            Math.round(((uploadedBytes + fileBytes) / totalBytes) * 100),
-          );
-        });
-        uploadedBytes += file.size;
-      }
-      const started = await api<CloudJob>(`/v1/jobs/${created.job.id}/start`, {
-        method: 'POST',
-      });
-      setJob(started);
+      const url = new URL(window.location.href);
+      url.searchParams.set('job', created.job.id);
+      window.history.replaceState(null, '', url);
+      await transferVideos(created.job);
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -305,6 +269,77 @@ export function CloudJobs() {
     }
   };
 
+  async function transferVideos(current: CloudJob) {
+    for (const [index, expected] of (current.videoFiles ?? []).entries()) {
+      const sessionPath = `/v1/jobs/${current.id}/uploads`;
+      const loadSession = () => api<UploadTarget>(sessionPath, {
+        method: 'POST', body: JSON.stringify({ fileIndex: index }),
+      });
+      let session = await loadSession();
+      const file = videos[index];
+      const base = session.offset ?? 0;
+      const started = performance.now();
+      const report = (bytes: number) => setVideoProgress(previous => previous.map((value, camera) =>
+        camera === index ? { bytes, rate: Math.max(0, bytes - base) * 1000 / Math.max(1, performance.now() - started) } : value
+      ));
+      report(base);
+      if (base === expected.size) continue;
+      if (!file || file.name !== expected.name || file.size !== expected.size) {
+        throw new Error(`Reselect the original Camera ${index === 0 ? 'A' : 'B'} video (${expected.name}).`);
+      }
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if ((session.offset ?? 0) >= file.size) break;
+          await uploadVideo(file, session, report);
+          break;
+        } catch (reason) {
+          if (attempt >= 2) throw reason;
+          session = await loadSession();
+          report(session.offset ?? 0);
+        }
+      }
+      report(expected.size);
+    }
+    setJob(await api<CloudJob>(`/v1/jobs/${current.id}/start`, { method: 'POST' }));
+  }
+
+  async function resumeVideo(current: CloudJob) {
+    setSubmitting(true);
+    setError(null);
+    try {
+      if (current.state === 'uploading') {
+        await transferVideos(current);
+      } else {
+        const excluded = excludedPairs.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+        const body = current.state === 'review' ? JSON.stringify({ excluded }) : undefined;
+        setJob(await api<CloudJob>(`/v1/jobs/${current.id}/start`, { method: 'POST', body }));
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not resume this job.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function purge(id: string) {
+    setSubmitting(true);
+    setError(null);
+    try {
+      setJob(await api<CloudJob>(`/v1/jobs/${id}/purge`, {
+        method: 'POST', body: JSON.stringify({ localCopyVerified }),
+      }));
+      setLocalCopyVerified(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not purge the RunPod files.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const chooseVideo = (index: number, file: File | null) => {
+    setVideos(previous => previous.map((value, camera) => camera === index ? file : value));
+  };
+
   return (
     <div className="cloud-workspace">
       <section className="cloud-card" aria-labelledby="cloud-title">
@@ -314,23 +349,21 @@ export function CloudJobs() {
           </span>
           <div>
             <p className="eyebrow">Scale-to-zero reconstruction</p>
-            <h1 id="cloud-title">Process a reef in the cloud</h1>
+            <h1 id="cloud-title">Configure &amp; Run</h1>
           </div>
         </div>
         <p className="cloud-lead">
-          Photographs upload directly to your connected cloud storage. A GPU
-          worker starts only for processing, saves a compact textured model,
-          then shuts down.
+          Upload Camera A and Camera B, extract synchronized image pairs, and reconstruct the survey on RunPod.
         </p>
 
-        {!job || job.state === 'failed' ? (
+        {!job ? (
           <div className="cloud-form">
             <label>
               <span>RunPod runtime</span>
               <select value={runtimeId} disabled={submitting || runtimeLoading} onChange={(event) => setRuntimeId(event.target.value)}>
                 <option value="">Configured default endpoint</option>
                 {runtimeCatalog?.endpoints.map((endpoint) => (
-                  <option key={endpoint.id} value={endpoint.id} disabled={endpoint.workersMax === 0}>
+                  <option key={endpoint.id} value={endpoint.id} disabled={endpoint.workersMax === 0 || !endpoint.isDefault}>
                     {endpoint.name}{endpoint.gpuIds ? ` · ${endpoint.gpuIds}` : ''}
                     {endpoint.workersMax === 0 ? ' · disabled' : endpoint.health
                       ? ` · ${endpoint.health.idle} idle, ${endpoint.health.running} busy, ${endpoint.health.initializing} starting`
@@ -338,7 +371,7 @@ export function CloudJobs() {
                   </option>
                 ))}
               </select>
-              <small className="cloud-field-help">Select an OpenReef endpoint; RunPod assigns an individual worker. Zero idle workers may mean it has scaled to zero. The endpoint needs the matching OpenReef image and storage credentials.</small>
+              <small className="cloud-field-help">Use the endpoint attached to the configured RunPod network volume.</small>
             </label>
             <button type="button" disabled={runtimeLoading || submitting || !API_URL} onClick={() => setRuntimeRefresh((value) => value + 1)}>
               {runtimeLoading ? 'Checking workers…' : 'Refresh RunPod workers'}
@@ -354,112 +387,53 @@ export function CloudJobs() {
                 onChange={(event) => setName(event.target.value)}
               />
             </label>
-            <div className="cloud-source-tabs" aria-label="Photograph source">
-              <button
-                type="button"
-                aria-pressed={sourceMode === 'drive'}
-                onClick={() => setSourceMode('drive')}
-              >
-                Use Drive folder
-              </button>
-              <button
-                type="button"
-                aria-pressed={sourceMode === 'upload'}
-                onClick={() => setSourceMode('upload')}
-              >
-                Upload new photos
-              </button>
-            </div>
-            <button type="button" aria-pressed={sourceMode === 'stereo'}
-              onClick={() => setSourceMode('stereo')}>Stereo camera folders</button>
-            {sourceMode !== 'upload' ? (
-              <>
-                <label>
-                  <span>{sourceMode === 'stereo' ? 'Left camera folder inside reefplot' : 'Folder inside reefplot'}</span>
-                  <input
-                    value={driveFolder}
-                    maxLength={300}
-                    onChange={(event) => setDriveFolder(event.target.value)}
-                  />
-                </label>
-                {sourceMode === 'stereo' && <>
-                  <label><span>Right camera folder inside reefplot</span>
-                    <input value={rightFolder} onChange={event => setRightFolder(event.target.value)} required />
+            {['A', 'B'].map((camera, index) => (
+                  <label key={camera}><span>Camera {camera} video</span>
+                    <input type="file" accept=".mp4,video/mp4"
+                      onChange={event => chooseVideo(index, event.target.files?.[0] ?? null)} />
                   </label>
-                  <label><span>Calibrated rig profile (.json)</span>
-                    <input type="file" accept=".json,application/json" onChange={async event => {
-                      const file = event.target.files?.[0];
+                ))}
+                <label><span>Left camera (time reference)</span>
+                  <select value={referenceCamera} onChange={event => setReferenceCamera(event.target.value as 'A' | 'B')}>
+                    <option value="B">Camera B</option><option value="A">Camera A</option>
+                  </select>
+                </label>
+                <label><span>Calibration</span>
+                  <select value={calibrated ? 'rig' : 'none'} onChange={event => setCalibrated(event.target.value === 'rig')}>
+                    <option value="none">Uncalibrated · estimate camera geometry</option>
+                    <option value="rig">Use existing rig.json</option>
+                  </select>
+                </label>
+                {calibrated && <label><span>Rig profile (rig.json)</span>
+                  <input type="file" accept=".json,application/json" onChange={async event => {
+                    const file = event.target.files?.[0];
+                    try {
+                      setRigProfile(file ? await file.text() : '');
+                      setError(null);
+                    } catch {
                       setRigProfile('');
-                      if (!file) return;
-                      try {
-                        setRigProfile(await file.text());
-                        setError(null);
-                      } catch {
-                        setError('Could not read the rig profile. Select the calibration .json file again.');
-                      }
-                    }} />
-                    <small>Required for stereo: select a saved calibration for these camera identities, resolution and lens settings.</small>
-                  </label>
-                  <label><span>Maximum pair time difference (ms)</span>
-                    <input type="number" min={0.001} step="any" value={pairTolerance}
-                      onChange={event => setPairTolerance(Number(event.target.value))} />
-                  </label>
-                  <label><span>Correction added to right camera clock (ms)</span>
-                    <input type="number" step="any" value={rightOffset}
-                      onChange={event => setRightOffset(Number(event.target.value))} />
-                    <small>Pairs use capture timestamps. Missed exposures remain single-camera frames.</small>
-                  </label>
-                </>}
-                <label>
-                  <span>{sourceMode === 'stereo' ? 'Maximum photos per camera' : 'Photos in first run'}</span>
-                  <input
-                    type="number"
-                    min={2}
-                    max={2000}
-                    value={driveLimit}
-                    onChange={(event) =>
-                      setDriveLimit(
-                        Number.parseInt(event.target.value, 10) || 2,
-                      )
+                      setError('Could not read the rig profile.');
                     }
-                  />
-                  <small className="cloud-field-help">
-                    Start with 30 photos; increase after the smoke test.
-                  </small>
+                  }} />
+                  <small>The first profile camera must be the selected left camera.</small>
+                </label>}
+                <label><span>Sampling interval (seconds)</span>
+                  <input type="number" step="0.1" min={0.1} max={120} value={interval}
+                    onChange={event => setIntervalSeconds(Number(event.target.value))} />
                 </label>
-              </>
-            ) : (
-              <label>
-                <span>Source photographs</span>
-                <input
-                  ref={inputRef}
-                  className="cloud-file-input"
-                  type="file"
-                  accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,image/*"
-                  multiple
-                  onChange={(event) =>
-                    setFiles(Array.from(event.target.files ?? []))
-                  }
-                />
-                <button
-                  className="cloud-file-picker"
-                  type="button"
-                  onClick={() => inputRef.current?.click()}
-                >
-                  <FolderOpen />
-                  <strong>
-                    {files.length
-                      ? `${files.length} photographs selected`
-                      : 'Choose photographs'}
-                  </strong>
-                  <small>
-                    {files.length
-                      ? formatBytes(totalBytes)
-                      : 'JPG, PNG, TIFF or WebP'}
-                  </small>
-                </button>
-              </label>
-            )}
+                <label><span>Maximum pairs</span>
+                  <input type="number" min={2} max={2000} value={maxPairs}
+                    onChange={event => setMaxPairs(Number(event.target.value))} />
+                </label>
+                <label><span>JPEG quality</span>
+                  <select value={jpegQuality} onChange={event => setJpegQuality(Number(event.target.value))}>
+                    <option value={2}>High (2)</option><option value={1}>Highest (1)</option>
+                  </select>
+                </label>
+                <label className="cloud-checkbox"><input type="checkbox" checked={colourCorrection}
+                  onChange={event => setColourCorrection(event.target.checked)} /> Apply underwater colour correction</label>
+                <label className="cloud-checkbox"><input type="checkbox" checked={reviewPairs}
+                  onChange={event => setReviewPairs(event.target.checked)} /> Pause for frame-pair review</label>
             <label>
               <span>Save outputs</span>
               <select value={outputMode} onChange={(event) => setOutputMode(event.target.value as 'compact' | 'full')}>
@@ -481,22 +455,17 @@ export function CloudJobs() {
               disabled={
                 submitting ||
                 !name.trim() ||
-                (sourceMode === 'upload' && files.length < 2) ||
-                (sourceMode === 'drive' && !driveFolder.trim())
+                videos.some(file => !file) || (calibrated && !rigProfile)
               }
             >
               {submitting ? <LoaderCircle className="spin" /> : <CloudUpload />}
-              {submitting
-                ? sourceMode === 'drive'
-                  ? 'Starting Drive job…'
-                  : 'Uploading photographs…'
-                : 'Submit GPU job'}
+              {submitting ? 'Uploading videos…' : 'Upload & run'}
             </Button>
           </div>
         ) : (
           <div className="cloud-status" aria-live="polite">
             <div className="cloud-status-line">
-              {job.state === 'completed' ? (
+              {['completed', 'purged'].includes(job.state) && !job.purging ? (
                 <Check />
               ) : (
                 <LoaderCircle className="spin" />
@@ -514,6 +483,43 @@ export function CloudJobs() {
             <progress max={100} value={progress}>
               {progress}%
             </progress>
+            {job.videoFiles && <section className="cloud-transfer" aria-label="Camera uploads">
+              <strong>Stage 0 — Upload &amp; prepare</strong>
+              {job.videoFiles.map((file, index) => {
+                const camera = index === 0 ? 'A' : 'B';
+                const bytes = file.verified ? file.size : videoProgress[index].bytes;
+                const percent = Math.floor(100 * bytes / file.size);
+                return <div key={camera}>
+                  <p>Camera {camera} · {file.name} · {percent}% · {formatBytes(bytes)} / {formatBytes(file.size)}
+                    {file.verified ? ' · verified on RunPod' : videoProgress[index].rate > 0 ? ` · ${formatRate(videoProgress[index].rate)}` : ''}</p>
+                  <progress aria-label={`Camera ${camera} upload`} max={100} value={percent} />
+                  {job.state === 'uploading' && !submitting && !file.verified &&
+                    <input type="file" aria-label={`Reselect Camera ${camera}`} accept=".mp4,video/mp4"
+                      onChange={event => chooseVideo(index, event.target.files?.[0] ?? null)} />}
+                </div>;
+              })}
+              {job.state === 'uploading' && !submitting && <Button onClick={() => resumeVideo(job)}>Resume uploads</Button>}
+              {['failed', 'cancelled'].includes(job.state) && <Button disabled={submitting}
+                onClick={() => resumeVideo(job)}>Retry with verified videos</Button>}
+              {(job.syncWarnings ?? []).map((warning, index) => <p key={index}>{warning}</p>)}
+            </section>}
+            {job.videoFiles && <section className="cloud-transfer" aria-label="Stage downloads">
+              <strong>Stage outputs</strong>
+              <label className="cloud-checkbox"><input type="checkbox" checked={autoDownload}
+                onChange={event => setAutoDownload(event.target.checked)} /> Automatically download available stage archives</label>
+              {(job.stageAssets ?? []).map(asset => <div key={asset.name}>
+                <a href={absoluteApiUrl(asset.url)} download>{asset.stage} · {asset.name}</a>
+              </div>)}
+              {job.state === 'review' && <>
+                <p>Review the paired frames and pairs.csv. {job.pairCount} pairs are available.</p>
+                <label><span>Pair numbers to exclude (comma separated)</span>
+                  <input value={excludedPairs} onChange={event => setExcludedPairs(event.target.value)} />
+                </label>
+                <Button disabled={submitting} onClick={() => resumeVideo(job)}>Run reconstruction</Button>
+              </>}
+            </section>}
+            {['completed', 'failed', 'cancelled', 'uploading', 'review', 'purged'].includes(job.state) && !submitting &&
+              <a href={window.location.pathname}>Configure a new job</a>}
             {timings && (
               <section className="cloud-timings" aria-label="Process timings">
                 <div className="cloud-timings-heading">
@@ -552,7 +558,7 @@ export function CloudJobs() {
                     <strong>
                       {(sourceDownload.cacheHits ?? 0) > 0
                         ? 'Runpod source cache'
-                        : `${storageLabel(job)} → Runpod`}
+                        : `RunPod network volume`}
                     </strong>
                     <small>
                       {sourceDownload.state === 'running'
@@ -564,7 +570,7 @@ export function CloudJobs() {
                 </div>
                 <dl className="cloud-transfer-stats">
                   <div>
-                    <dt>Images</dt>
+                    <dt>{job.videoFiles ? 'Videos' : 'Images'}</dt>
                     <dd>
                       {sourceDownload.filesCompleted}/
                       {sourceDownload.filesTotal}
@@ -592,8 +598,8 @@ export function CloudJobs() {
                 <div className="cloud-transfer-log" role="log">
                   <span>
                     {sourceDownload.state === 'running'
-                      ? `Staging ${sourceDownload.currentFile ?? 'source images'}…`
-                      : `Staged ${sourceDownload.filesTotal} source images in ${formatDuration(sourceDownload.elapsedSeconds)}; ${sourceDownload.cacheHits ?? 0} reused from Runpod storage.`}
+                      ? `Staging ${sourceDownload.currentFile ?? (job.videoFiles ? 'videos' : 'source images')}…`
+                      : `Staged ${sourceDownload.filesTotal} ${job.videoFiles ? 'videos' : 'source images'} in ${formatDuration(sourceDownload.elapsedSeconds)}; ${sourceDownload.cacheHits ?? 0} reused from Runpod storage.`}
                   </span>
                   <span>
                     Runpod logs retain the same file count, byte total, and
@@ -604,9 +610,20 @@ export function CloudJobs() {
             )}
             {job.state === 'completed' && job.result && (
               <>
-                <Button onClick={() => setShowViewer(true)}>
-                  Open model in viewer
-                </Button>
+                {job.result.bundleUrl && <>
+                  <a className="cloud-project-download" href={absoluteApiUrl(job.result.bundleUrl)} download>
+                    Download all results locally (.tar)
+                  </a>
+                  <label className="cloud-checkbox">
+                    <input type="checkbox" checked={localCopyVerified} disabled={job.purging}
+                      onChange={event => setLocalCopyVerified(event.target.checked)} />
+                    I saved and opened the local results archive.
+                  </label>
+                  <Button variant="outline" disabled={!localCopyVerified || submitting || job.purging}
+                    onClick={() => purge(job.id)}>
+                    {job.purging ? 'Purging RunPod files…' : 'Purge this job’s RunPod files'}
+                  </Button>
+                </>}
                 {job.result.stereoDiagnosticsUrl && <a href={absoluteApiUrl(job.result.stereoDiagnosticsUrl)} download>Download stereo pairing diagnostics</a>}
                 {job.result.rigProfileUrl && <a href={absoluteApiUrl(job.result.rigProfileUrl)} download>Download reusable rig profile</a>}
                 {job.result.stereoMatchingUrl && <a href={absoluteApiUrl(job.result.stereoMatchingUrl)} download>Download matching diagnostics</a>}
@@ -620,14 +637,9 @@ export function CloudJobs() {
           </div>
         )}
 
-        {job?.sourceSummary && (job.sourceSummary.duplicateCopiesSkipped > 0 || job.sourceSummary.renamedFiles > 0) && (
-          <p className="cloud-notice">
-            {job.sourceSummary.duplicateCopiesSkipped} identical copies skipped; {job.sourceSummary.renamedFiles} filenames made unique for this project. Originals in Drive are unchanged.
-          </p>
-        )}
-        {error && (
+        {(error || job?.error) && (
           <p className="cloud-error" role="alert">
-            {error}
+            {error || job?.error}
           </p>
         )}
         {!API_URL && (
@@ -639,15 +651,40 @@ export function CloudJobs() {
         <div className="cloud-route" aria-label="Processing route">
           <span>Browser</span>
           <b>→</b>
-          <span>{job ? storageLabel(job) : 'Cloud storage'}</span>
+          <span>RunPod network volume</span>
           <b>→</b>
           <span>RunPod GPU</span>
           <b>→</b>
-          <span>Viewer</span>
+          <span>Local downloads</span>
         </div>
       </section>
     </div>
   );
+}
+
+async function uploadVideo(file: File, session: UploadTarget, report: (bytes: number) => void) {
+  const { partPath, partBytes } = session;
+  if (!partPath || !partBytes) throw new Error('RunPod did not return a multipart upload session.');
+  for (let start = session.offset ?? 0; start < file.size;) {
+    const end = Math.min(start + partBytes, file.size);
+    const part = Math.floor(start / partBytes) + 1;
+    const acknowledged = await new Promise<number>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', absoluteApiUrl(`${partPath}/${part}`));
+      xhr.withCredentials = true;
+      xhr.responseType = 'json';
+      xhr.timeout = 300_000;
+      xhr.upload.onprogress = event => report(start + event.loaded);
+      xhr.onload = () => {
+        if (xhr.status === 200 && xhr.response?.offset === end) resolve(end);
+        else reject(new Error(xhr.response?.error || `Upload stopped for ${file.name} (HTTP ${xhr.status}).`));
+      };
+      xhr.onerror = xhr.ontimeout = () => reject(new Error(`Upload connection interrupted for ${file.name}.`));
+      xhr.send(file.slice(start, end));
+    });
+    start = acknowledged;
+    report(start);
+  }
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -664,46 +701,8 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload;
 }
 
-async function uploadFile(
-  file: File,
-  uploadUrl: string,
-  onProgress: (uploadedBytes: number) => void,
-) {
-  let start = 0;
-  while (start < file.size) {
-    const endExclusive = Math.min(start + UPLOAD_CHUNK_BYTES, file.size);
-    const response = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        'Content-Range': `bytes ${start}-${endExclusive - 1}/${file.size}`,
-      },
-      body: file.slice(start, endExclusive),
-    });
-    if (
-      !response.ok &&
-      response.status !== 202 &&
-      response.status !== 201 &&
-      response.status !== 308
-    ) {
-      throw new Error(
-        `Cloud upload failed for ${file.name} (${response.status}).`,
-      );
-    }
-    start = endExclusive;
-    onProgress(start);
-  }
-}
-
 function absoluteApiUrl(path: string): string {
   return `${API_URL}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
-function storageLabel(job: CloudJob): string {
-  return job.storage?.provider === 'google-drive'
-    ? 'Google Drive'
-    : job.storage?.provider === 'sharepoint'
-      ? 'SharePoint'
-      : 'Cloud storage';
 }
 
 function formatBytes(bytes: number): string {

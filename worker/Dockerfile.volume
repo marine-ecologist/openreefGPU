@@ -1,0 +1,12 @@
+# Worker-only update; keep the verified native stack and patched OpenReef unchanged.
+FROM ghcr.io/marine-ecologist/openreef-gpu:0.6.5-gpu.10-volume.2
+RUN colmap feature_extractor --help 2>&1 | grep -q single_camera_per_folder
+RUN colmap bundle_adjuster --help 2>&1 | grep -q BundleAdjustmentCeres.use_gpu
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.12
+ENV OPENREEF_GPU_VERSION=${OPENREEF_GPU_VERSION}
+COPY worker/ /opt/openreefgpu/worker/
+COPY versions.json /opt/openreefgpu/versions.json
+WORKDIR /opt/openreefgpu
+CMD ["python3", "-m", "worker.handler"]

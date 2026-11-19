@@ -1,0 +1,146 @@
+---
+title: "OpenReef v0.7 user manual"
+format: html
+toc: true
+---
+
+## Record both cameras
+
+Use an overlapping GoPro MP4 from each camera on the same rigid mount. Record
+with GPMF telemetry enabled and identical recording settings. Switch
+HyperSmooth off, especially when using a calibrated rig. A short, sharp twist
+of the entire rig near the start and end helps the worker estimate timing and
+clock drift. Keep the rig steady and move slowly during the survey.
+
+OpenReef accepts one MP4 per camera, up to 50 GiB combined. Choose a matching
+pair of clips when a survey is split into GoPro chapters. The original MP4s
+retain the embedded telemetry used for synchronization.
+
+## Configure & Run
+
+1. Open **Configure & Run → Stereo video** and give the survey a name.
+2. Choose the Camera A and Camera B MP4s. Set the physical camera used as the
+   left/time-reference camera. On the CCMI rig, this is Camera B.
+3. Choose an existing **rig.json** or select **Uncalibrated**.
+4. Choose the sampling interval and maximum pair count. The default interval
+   is one second. JPEG setting 2 is high quality and 1 is the highest setting.
+   Optional underwater colour correction changes the colour of the extracted
+   stills without resizing them.
+5. Pick the RunPod runtime and select **Upload & run**. **Compact preview**
+   produces the web model. **Full project + compact preview** also packages the
+   dataset and can include the prepared JPEGs.
+6. To inspect the stills first, enable **Pause for frame-pair review** before
+   submitting. When Stage 0 finishes, download the paired frames and
+   `pairs.csv`. Open corresponding left and right JPEGs side by side, check a
+   sharp event, and enter the pair numbers to exclude. Select **Run
+   reconstruction** with at least two pairs retained. With review disabled,
+   reconstruction starts automatically after preparation.
+
+### Use an existing rig profile
+
+Use the profile for the same physical camera order, baseline, underwater
+housings, lens mode, field of view and image resolution. The first camera in
+the JSON must be the left/time-reference camera. Recalibrate after changing
+the rig geometry or optical settings.
+
+A compatible profile contains two camera IDs, pixel dimensions, camera
+models, intrinsic parameters and the rigid transform `rightFromLeft`.
+The transform satisfies `X_right = R X_left + t`, with translation in metres.
+OpenReef uses the calibrated intrinsics and fixed relative pose in COLMAP.
+The baseline provides metric scale. Profile selection uses a calibration
+created previously. For instructions on making a checkerboard profile, see
+the [existing stereo calibration workflow](../STEREO.md).
+
+### Run uncalibrated
+
+GoPro telemetry still aligns the images in time. COLMAP estimates camera
+geometry from visual matches, with no fixed relative pose or shared-intrinsics
+constraint across the two cameras. The reconstruction has arbitrary scale
+unless you set scale from a suitable known-size reference. This option is
+useful when you lack a profile or need a preliminary model.
+
+## Watch Stage 0 and review synchronization
+
+The **Camera A** and **Camera B** bars show their own upload percentage, bytes
+and transfer rate. The API relays signed multipart requests to the RunPod
+network volume. Both video objects must be complete and match the expected
+sizes before the API queues the worker. The worker reads the mounted files
+and rechecks their sizes before extracting frames.
+
+If the browser closes or the connection drops, open the job in **Job history**,
+reselect the original MP4s if prompted and choose **Resume uploads**. Completed
+files are reused. Multipart uploads resume from the last committed chunk.
+
+OpenReef reads the GoPro GPMF gyroscope packets, aligns angular-speed traces
+and estimates a linear offset and drift. It selects the nearest actual video
+presentation timestamp in the second camera for each sampled reference frame,
+then checks the decoded frame timestamps. Both JPEGs in a pair are labeled
+with the same time for reconstruction. Creation time, when present, labels
+the reference clock only. Gyroscope data determines the alignment.
+
+Check the Stage 0 downloads:
+
+- `pairs.csv` lists the selected frame indices, original video times and
+  signed nearest-frame residual. Frame indices are zero-based and pair
+  numbers are one-based.
+- `sync.json` records the reference camera, offset, drift, gyro fit quality,
+  available stabilization and rolling-shutter metadata, and optical-flow
+  and calibrated epipolar checks where those checks are conclusive.
+- `timestamps.json` supplies the shared capture time for each left and right
+  JPEG. The paired archive contains these sidecars and the full-size stills.
+
+Treat a short or weak gyro fit, a large optical-flow discrepancy or high
+epipolar error as a reason to inspect the paired images and the rig setup.
+Nearest-frame pairs suit reconstruction. Precision stereo measurements of
+moving targets require a workflow that accounts for exposure timing and
+rolling shutter.
+
+## Retrieve outputs
+
+The job view refreshes automatically as RunPod publishes results. Individual
+downloads appear under **Stage outputs** even before the final model is
+complete. Enable **Automatically download available stage archives** to save
+them while the job page is open. Browser download settings can require
+permission for multiple files. Manual download links remain available.
+
+| Stage | Saved output |
+|:--|:--|
+| 0. Upload & prepare | Paired stills and synchronization metadata |
+| 1. Features and matches | COLMAP database and available matching diagnostics |
+| 2. Sparse reconstruction | COLMAP model and available sparse point cloud |
+| 3. Undistortion and OpenMVS import | Undistorted COLMAP dataset and OpenMVS scene |
+| 4. Dense point cloud | OpenMVS dense scene and point clouds |
+| 5. Surface mesh | Mesh files |
+| 6. Texture mesh | Textured mesh outputs and the final GLB |
+
+Use **Job history** to reopen the preparation and reconstruction logs or
+download completed stages. After reconstruction, select **Download all results
+locally**. Extract the archive and open `model.glb` in desktop OpenReef.
+The archive also contains the stage archives and, if selected, the full
+project package.
+
+After opening the local archive and verifying the files you need, check
+**I saved and opened the local results archive** and select **Purge this
+job’s RunPod files**. RunPod removes the uploaded videos, project workspace,
+logs and downloads for that job. A small history entry remains. Keep your
+original MP4s and the downloaded archive locally. A failed job can be retried
+with its uploaded videos and retained checkpoints.
+
+## Start a local frontend
+
+Use Node.js 22.13 or newer. From the OpenReefGPU directory:
+
+```sh
+npm ci
+NEXT_PUBLIC_OPENREEF_API_URL=http://localhost:8787 npm run dev -- --port 3000
+```
+
+The local API and GPU worker setup is documented in
+[RunPod volume deployment](RUNPOD_VIDEO_VOLUME.md). OpenReef v0.7 uses
+cloud package version `0.6.5-gpu.12`
+and keeps the pinned OpenReef 0.6.5 reconstruction engine. The API and GPU
+image should use the same version. In the desktop workspace checkout, start
+the app with `OPENREEF_CLOUD_URL` set to the frontend URL to show
+**Configure & Run on RunPod** on the **Process** page.
+
+Render this manual with `quarto render docs/openreef-user-manual.qmd`.

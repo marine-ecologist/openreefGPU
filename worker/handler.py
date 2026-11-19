@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import http.client
 import json
@@ -14,6 +15,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +25,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from worker.volume_jobs import VolumeJobStorage
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 GOOGLE_DRIVE_ROOT = "https://www.googleapis.com/drive/v3"
@@ -779,6 +783,11 @@ def validate_version_contract(
 def handler(event: dict[str, Any]) -> dict[str, Any]:
     """Process one Runpod event and persist durable state in cloud storage."""
     payload = event.get("input") or {}
+    if "volume" in payload:
+        from worker import handler as volume_worker
+        from worker.volume import run
+
+        return run(payload, volume_worker)
     job_id = str(payload.get("job_id", ""))
     if not JOB_ID_PATTERN.fullmatch(job_id):
         raise ValueError("input.job_id must be a UUID")
@@ -790,9 +799,32 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         raise WorkerConfigurationError("The pinned OpenReef package is not installed") from exc
     versions = validate_version_contract(payload, openreef.__version__)
 
-    storage = create_storage_client()
+    storage = VolumeJobStorage() if payload.get("volume_job") is True else create_storage_client()
+    if payload.get("action") == "purge":
+        if not isinstance(storage, VolumeJobStorage):
+            raise ValueError("Purge requires a volume job")
+        storage.purge(job_id)
+        return {"job_id": job_id, "state": "purged"}
     job_root = storage.job_path(job_id)
     job = read_job(storage, job_root)
+    if job.get("stereoVideo"):
+        # The queue response contains the RunPod ID that the API must save first.
+        for _ in range(60):
+            if job["state"] == "queued" and job.get("runpodJobId") == event.get("id"):
+                break
+            time.sleep(1)
+            job = read_job(storage, job_root)
+        if (
+            job["state"] != "queued"
+            or job.get("runpodJobId") != event.get("id")
+            or not all(
+                file.get("sourceId")
+                if isinstance(storage, VolumeJobStorage)
+                else file.get("sourceMd5")
+                for file in job["files"]
+            )
+        ):
+            raise RuntimeError("Stereo video job was not queued with two verified uploads")
     output_mode, include_source_images = project_options(job)
     job["state"] = "running"
     start_timing_step(job, "Source staging")
@@ -884,7 +916,32 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                         progress=3,
                     )
 
-            if job.get("stereo"):
+            video_config = job.get("stereoVideo")
+            if video_config:
+                log_dir = dataset / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                prepare_log = log_dir / "prepare.log"
+                with prepare_log.open("a", encoding="utf-8") as log:
+                    log.write(f"{utc_now()} Starting video preparation\n")
+                update_job(
+                    storage, job_root, job, stage="Stage 0 — Staging verified videos", progress=3
+                )
+                image_count = stage_video_source(
+                    storage, job_root, job, dataset, source_folder, report_source_transfer
+                )
+                with prepare_log.open("a", encoding="utf-8") as log:
+                    log.write(f"{utc_now()} Prepared {job['pairCount']} synchronized pairs\n")
+                    for warning in job.get("syncWarnings", []):
+                        log.write(f"Warning: {warning}\n")
+                retain_stage_asset(storage, job_root, job, "Preparation log", prepare_log)
+                if image_count is None:
+                    job["state"] = "review"
+                    complete_timings(job, "completed")
+                    update_job(
+                        storage, job_root, job, stage="Stage 0 — Review frame pairs", progress=5
+                    )
+                    return {"job_id": job_id, "state": "review"}
+            elif job.get("stereo"):
                 image_count = stage_stereo_source(storage, job, dataset, report_source_transfer)
             else:
                 image_count = storage.download_folder(
@@ -906,11 +963,26 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 start_timing_step(job, stage)
                 update_job(storage, job_root, job, stage=stage, progress=progress)
 
+            def publish_pipeline_stage(stage: str, reused: bool) -> None:
+                publish_video_checkpoint(storage, job_root, job, dataset, stage, reused)
+
             run_pipeline(
                 dataset,
                 report_pipeline_stage,
                 full_project=output_mode == "full",
-                **({"stereo": True} if job.get("stereo") else {}),
+                **(
+                    {"stereo": True}
+                    if job.get("stereo") or (video_config and video_config.get("profile"))
+                    else {}
+                ),
+                **(
+                    {
+                        "completed": publish_pipeline_stage,
+                        "uncalibrated": not video_config.get("profile"),
+                    }
+                    if video_config
+                    else {}
+                ),
             )
 
             artifacts = select_result_artifacts(dataset)
@@ -918,7 +990,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 start_timing_step(job, "Archiving full project")
                 update_job(storage, job_root, job, stage="Archiving full project", progress=94)
                 artifacts["project"] = archive_project(dataset, job, include_source_images)
-            start_timing_step(job, "Uploading results to Drive")
+            start_timing_step(job, "Publishing results")
             update_job(storage, job_root, job, stage="Uploading compact web model", progress=96)
             output_root = f"{job_root}/output"
             uploaded: list[dict[str, Any]] = []
@@ -948,7 +1020,6 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                 "application/json",
             )
             model_name = next(item["name"] for item in uploaded if item["role"] == "model")
-            job["state"] = "completed"
             job["result"] = {"model": model_name, "manifest": "manifest.json"}
             if "gaussian" in artifacts:
                 job["result"]["gaussian"] = result_file_name("gaussian", artifacts["gaussian"])
@@ -957,8 +1028,24 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
                     job["result"][role] = result_file_name(role, artifacts[role])
             if "project" in artifacts:
                 job["result"]["project"] = result_file_name("project", artifacts["project"])
+            if isinstance(storage, VolumeJobStorage):
+                update_job(storage, job_root, job, stage="Packaging local download", progress=98)
+                bundle_name = "openreef-results.tar"
+                target = storage.path(f"{output_root}/{bundle_name}")
+                temporary = dataset.parent / bundle_name
+                output = storage.path(output_root)
+                with tarfile.open(temporary, "w") as bundle:
+                    for path in sorted(output.iterdir()):
+                        if path.is_file() and path != target:
+                            bundle.add(path, arcname=path.name)
+                temporary.replace(target)
+                job["result"]["bundle"] = bundle_name
+            job["state"] = "completed"
             complete_timings(job, "completed")
-            update_job(storage, job_root, job, stage="Ready to view", progress=100)
+            stage = (
+                "Ready to download" if isinstance(storage, VolumeJobStorage) else "Ready to view"
+            )
+            update_job(storage, job_root, job, stage=stage, progress=100)
             return {
                 "job_id": job_id,
                 "state": "completed",
@@ -985,13 +1072,20 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 @contextmanager
 def diagnostic_workspace(storage: Any, job_root: str, job: dict[str, Any]):
     """Upload failure evidence before TemporaryDirectory removes the workspace."""
-    with tempfile.TemporaryDirectory(prefix=f"openreef-{str(job['id'])[:8]}-") as temporary:
+    with processing_workspace(job, storage) as temporary:
         try:
             yield temporary
         except Exception as failure:
             # Never replace the original processing exception with an upload failure.
             try:
                 root = Path(temporary)
+                if job.get("stereoVideo"):
+                    for log in root.glob("*/logs/prepare.log"):
+                        with log.open("a", encoding="utf-8") as stream:
+                            stream.write(traceback.format_exc())
+                        retain_stage_asset(storage, job_root, job, "Preparation log", log)
+                    for log in root.glob("*/logs/pipeline.log"):
+                        retain_stage_asset(storage, job_root, job, "Processing log", log)
                 archive = root / "failure-diagnostics.tar.gz"
                 included, omitted = [], []
                 budget = 256 * 1024**2
@@ -1028,6 +1122,182 @@ def diagnostic_workspace(storage: Any, job_root: str, job: dict[str, Any]):
             except Exception as diagnostic_error:
                 print(f"Could not retain failure diagnostics: {diagnostic_error}", flush=True)
             raise
+
+
+@contextmanager
+def processing_workspace(job: dict[str, Any], storage=None):
+    if isinstance(storage, VolumeJobStorage):
+        folder = storage.path(job["id"])
+        workspace = folder / "workspace"
+        workspace.mkdir(exist_ok=True)
+        with (folder / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield str(workspace)
+        return
+    volume = Path(os.getenv("OPENREEF_WORKSPACE_DIR", "/runpod-volume"))
+    if job.get("stereoVideo") and volume.is_dir():
+        workspace = volume / "openreef-video-jobs" / job["id"]
+        workspace.mkdir(parents=True, exist_ok=True)
+        with (workspace / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield str(workspace)
+    else:
+        with tempfile.TemporaryDirectory(prefix=f"openreef-{str(job['id'])[:8]}-") as temporary:
+            yield temporary
+
+
+def retain_stage_asset(storage, job_root, job, stage, path):
+    storage.put_file(f"{job_root}/output/{path.name}", path)
+    assets = job.setdefault("stageAssets", [])
+    assets[:] = [asset for asset in assets if asset["name"] != path.name]
+    assets.append({"stage": stage, "name": path.name})
+
+
+def pack_stage(storage, job_root, job, dataset, label, filename, patterns):
+    paths = sorted({path for pattern in patterns for path in dataset.glob(pattern)})
+    if not paths:
+        return
+    with tempfile.TemporaryDirectory(prefix="openreef-stage-") as temporary:
+        archive = Path(temporary) / filename
+        with tarfile.open(archive, "w:gz", compresslevel=1, dereference=True) as bundle:
+            for path in paths:
+                bundle.add(path, arcname=str(path.relative_to(dataset)))
+        retain_stage_asset(storage, job_root, job, label, archive)
+
+
+VIDEO_CHECKPOINTS = {
+    "Sequential matching": (
+        1,
+        "Features and matches",
+        ("colmap/database.db", "stereo/match-diagnostics.json"),
+    ),
+    "Sparse reconstruction": (
+        2,
+        "Sparse reconstruction",
+        ("colmap/sparse", "models/*sparse_cloud*.ply"),
+    ),
+    "OpenMVS import": (3, "Undistortion and OpenMVS import", ("colmap/dense", "openmvs/scene.mvs")),
+    "Dense point cloud": (4, "Dense point cloud", ("openmvs/scene_dense*",)),
+    "Surface mesh": (5, "Surface mesh", ("openmvs/*mesh*.ply", "openmvs/*mesh*.mvs")),
+    "Texture mesh": (6, "Texture mesh", ("openmvs/*textured*", "models/*textured*.glb")),
+}
+
+
+def publish_video_checkpoint(storage, job_root, job, dataset, stage, reused):
+    if stage not in VIDEO_CHECKPOINTS:
+        return
+    number, label, patterns = VIDEO_CHECKPOINTS[stage]
+    filename = f"stage-{number}.tar.gz"
+    if not reused or not any(asset["name"] == filename for asset in job.get("stageAssets", [])):
+        pack_stage(storage, job_root, job, dataset, f"Stage {number} — {label}", filename, patterns)
+    retain_stage_asset(storage, job_root, job, "Processing log", dataset / "logs" / "pipeline.log")
+    update_job(storage, job_root, job, stage=stage, progress=STAGE_PROGRESS[stage])
+
+
+def stage_video_source(storage, job_root, job, dataset, source_folder, report):
+    from worker.stereo_video import extract
+
+    config = job["stereoVideo"]
+    paired = dataset / "paired"
+    stamp_file = paired / "timestamps.json"
+    if not stamp_file.is_file():
+        source = dataset.parent / "videos"
+        shutil.rmtree(source, ignore_errors=True)
+        storage.download_folder(source_folder, source, job["files"], report)
+        for file in job["files"]:
+            if isinstance(storage, VolumeJobStorage):
+                continue  # The mounted adapter already verified the completed object size.
+            path = source / file["name"]
+            with path.open("rb") as incoming:
+                checksum = hashlib.file_digest(incoming, "md5").hexdigest()
+            if path.stat().st_size != file["size"] or checksum != file["sourceMd5"].lower():
+                # A bad volume cache entry should not poison subsequent retries.
+                if path.is_symlink():
+                    path.resolve().unlink(missing_ok=True)
+                raise ValueError(f"Camera {file['cameraId']} failed size or checksum verification")
+        update_job(
+            storage, job_root, job, stage="Stage 0 — Synchronizing and extracting", progress=4
+        )
+        temporary = paired.with_name("paired-incomplete")
+        shutil.rmtree(temporary, ignore_errors=True)
+        extract(
+            source / "camera-A.mp4",
+            source / "camera-B.mp4",
+            temporary,
+            {**config, "site": dataset.name.replace(" ", "_")},
+        )
+        temporary.rename(paired)
+    else:
+        total = sum(file["size"] for file in job["files"])
+        report(2, 2, total, total, "Verified cached frame pairs", 2)
+    stamps = json.loads(stamp_file.read_text())
+    sync = json.loads((paired / "sync.json").read_text())
+    job["syncWarnings"] = sync["warnings"]
+    job["pairCount"] = len(stamps["left"])
+    if not any(asset["name"] == "stage-0.tar.gz" for asset in job.get("stageAssets", [])):
+        update_job(storage, job_root, job, stage="Stage 0 — Publishing frame pairs", progress=5)
+        for name in ("pairs.csv", "sync.json", "timestamps.json"):
+            retain_stage_asset(
+                storage, job_root, job, "Stage 0 — Extraction metadata", paired / name
+            )
+        pack_stage(
+            storage,
+            job_root,
+            job,
+            dataset,
+            "Stage 0 — Paired frames",
+            "stage-0.tar.gz",
+            ("paired",),
+        )
+        update_job(storage, job_root, job, stage="Stage 0 — Paired frames ready", progress=5)
+
+    if config.get("reviewPairs") and not job.get("reviewed"):
+        return None
+
+    excluded = set(job.get("excludedPairs", []))
+    stamps = {
+        side: {
+            name: timestamp
+            for index, (name, timestamp) in enumerate(sorted(entries.items()), 1)
+            if index not in excluded
+        }
+        for side, entries in stamps.items()
+    }
+    ready = dataset / ".video-inputs-ready"
+    if not ready.is_file():
+        # A previous preparation attempt may have left partially populated input folders.
+        for folder in ("selected", "images", "stereo"):
+            shutil.rmtree(dataset / folder, ignore_errors=True)
+        selected = dataset / "selected"
+        for side, entries in stamps.items():
+            folder = selected / side
+            folder.mkdir(parents=True)
+            for name in entries:
+                (folder / name).symlink_to(Path("../../paired") / side / name)
+
+        if config.get("profile"):
+            from openreef.pipeline.stereo import prepare_dataset
+
+            profile = config["profile"]
+            prepare_dataset(
+                selected / "left",
+                selected / "right",
+                dataset,
+                profile,
+                timestamps={
+                    camera["id"]: stamps[side]
+                    for camera, side in zip(profile["cameras"], ("left", "right"), strict=True)
+                },
+            )
+        else:
+            images = dataset / "images"
+            images.mkdir()
+            for side in ("left", "right"):
+                for name in stamps[side]:
+                    index = Path(name).stem.rsplit("_", 1)[-1]
+                    (images / f"{index}_{side}.jpg").symlink_to(Path("..") / "paired" / side / name)
+        ready.touch()
+    return sum(map(len, stamps.values()))
 
 
 def stage_stereo_source(storage: Any, job: dict, dataset: Path, report: Callable) -> int:
@@ -1096,10 +1366,14 @@ def run_pipeline(
     *,
     full_project: bool = False,
     stereo: bool = False,
+    completed: Callable[[str, bool], None] | None = None,
+    uncalibrated: bool = False,
 ) -> None:
     command = pipeline_command(dataset, full_project=full_project)
     if stereo:
         command.append("--stereo")
+    if uncalibrated:
+        command.append("--no-single-camera")
     log_dir = dataset / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     cores = pipeline_core_count()
@@ -1119,13 +1393,32 @@ def run_pipeline(
     )
     assert process.stdout is not None
     last_stage = ""
-    with process.stdout, (log_dir / "pipeline.log").open("w", encoding="utf-8") as log:
+    with (
+        process.stdout,
+        (log_dir / "pipeline.log").open("a" if completed else "w", encoding="utf-8") as log,
+    ):
         log.write("Command: " + json.dumps(command) + "\n")
         for line in process.stdout:
             log.write(line)
             log.flush()
             print(line, end="", flush=True)
-            stage = stage_from_output(line)
+            if completed:
+                marker = re.fullmatch(r"✓ (.+) complete", line.strip())
+                skipped = re.fullmatch(
+                    r"\[\d+/\d+\] (.+): existing output found, skipping", line.strip()
+                )
+                if marker or skipped:
+                    try:
+                        completed((marker or skipped)[1], skipped is not None)
+                    except BaseException:
+                        process.terminate()
+                        process.wait()
+                        raise
+                    continue
+                banner = re.match(r"\[\d+/\d+\] (.+)", line.strip())
+                stage = banner[1] if banner and banner[1] in STAGE_PROGRESS else None
+            else:
+                stage = stage_from_output(line)
             if stage and stage != last_stage:
                 last_stage = stage
                 progress(stage, STAGE_PROGRESS[stage])
@@ -1257,7 +1550,13 @@ def archive_project(dataset: Path, job: dict[str, Any], include_source_images: b
         "sourceImagesIncluded": include_source_images,
         "sourceFiles": job.get("files", []),
         "pipelineCommand": pipeline_command(dataset, full_project=True)
-        + (["--stereo"] if job.get("stereo") else []),
+        + (
+            ["--stereo"]
+            if job.get("stereo") or job.get("stereoVideo", {}).get("profile")
+            else ["--no-single-camera"]
+            if job.get("stereoVideo")
+            else []
+        ),
     }
     (dataset / "cloud-run.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (dataset / "CLOUD_PROJECT_README.txt").write_text(
@@ -1266,10 +1565,11 @@ def archive_project(dataset: Path, job: dict[str, Any], include_source_images: b
         "Resolution caps are unchanged from this cloud run; original output does not mean "
         "uncapped photo resolution.\n"
         + (
-            "Original photographs are included in images/.\n"
+            "Prepared photographs are included in images/.\n"
             if include_source_images
-            else "Copy the source photographs listed in cloud-run.json "
-            "into images/ before resuming.\n"
+            else "Retrieve the prepared photographs from this job's Stage 0 archive.\n"
+            if job.get("stereoVideo")
+            else "Copy the photographs listed in cloud-run.json into images/ before resuming.\n"
         )
         + "Native scene files may contain worker-specific absolute paths. If needed, "
         "regenerate undistortion/OpenMVS import locally against the extracted dataset.\n"
@@ -1278,7 +1578,11 @@ def archive_project(dataset: Path, job: dict[str, Any], include_source_images: b
     size = 0
     for path in sorted(dataset.rglob("*")):
         relative = path.relative_to(dataset)
-        is_source = relative.parts[0] == "images"
+        is_source = relative.parts[0] == "images" or (
+            len(relative.parts) > 1
+            and relative.parts[0] in {"paired", "selected"}
+            and relative.parts[1] in {"left", "right"}
+        )
         if is_source and not include_source_images:
             continue
         if path.is_symlink():

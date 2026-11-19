@@ -126,12 +126,12 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG OPENREEF_REPOSITORY=https://github.com/marine-ecologist/openreef.git
 ARG OPENREEF_VERSION=0.6.5
 ARG OPENREEF_REF=7329fe43e3d43f605e9961c608af81e72788b475
-ARG OPENREEF_GPU_VERSION=0.6.5-gpu.10
+ARG OPENREEF_GPU_VERSION=0.6.5-gpu.12
 ARG CERES_REF=71be12da7161b567990f165e38771dc9c7e4e96b
 ARG COLMAP_REF=68b722be23fdba964a24583720bde07675171d47
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates python3 python3-pip \
+    git ca-certificates ffmpeg python3 python3-pip \
     libblas-dev liblapack-dev \
     libboost-graph-dev libboost-iostreams-dev libboost-program-options-dev \
     libboost-serialization-dev libboost-system-dev libcgal-dev libcudss0-cuda-12 \

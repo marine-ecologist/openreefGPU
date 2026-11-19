@@ -9,7 +9,9 @@ const source = readFileSync(new URL('../cloud/api/src/index.ts', import.meta.url
     class StorageError extends Error { status = 500; }
     const storageForEnv = () => globalThis.__fullProjectStorage;
   `);
-const compiled = stripTypeScriptTypes(source);
+const compiled = stripTypeScriptTypes(source.replace(
+  /^import .* from '\.\/runpod-storage';/m, 'const VIDEO_PART_BYTES = 32 * 1024 * 1024;',
+));
 const { default: worker } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 const env = {
   ALLOWED_ORIGINS: '', REQUIRE_ACCESS: 'false',
@@ -352,6 +354,47 @@ test('stereo invalid calibration and conflicting sources fail before storage wri
   assert.equal((await createStereo(valid, { sourceFolder: 'images' })).status, 400);
 });
 
+test('stereo permits 2,000 photos per camera and respects the per-camera selection', async () => {
+  for (const maxFiles of [undefined, 2000, 3]) {
+    setup();
+    globalThis.__fullProjectStorage.listRootFiles = async folder => Array.from(
+      { length: 2001 }, (_, i) => ({ id: `${folder}-${i}`, name: `GOPR${String(i).padStart(4, '0')}.jpg`, size: 5 }),
+    );
+    const response = await createStereo(
+      { leftFolder: 'left', rightFolder: 'right', profile: rigProfile() },
+      maxFiles === undefined ? {} : { maxFiles },
+    );
+    assert.equal(response.status, 201);
+    const { job } = await response.json();
+    const files = records.get(`${job.id}/job.json`).files;
+    const perCamera = maxFiles ?? 2000;
+    assert.equal(files.length, perCamera * 2);
+    for (const id of ['left', 'right']) {
+      assert.equal(files.filter(file => file.cameraId === id).length, perCamera);
+    }
+  }
+});
+
+test('stereo retains combined 50 GiB protection with a specific error and no writes', async () => {
+  setup();
+  globalThis.__fullProjectStorage.listRootFiles = async folder => Array.from(
+    { length: 1000 }, (_, i) => ({ id: `${folder}-${i}`, name: `GOPR${i}.jpg`, size: 30 * 1024 ** 2 }),
+  );
+  const response = await createStereo({ leftFolder: 'left', rightFolder: 'right', profile: rigProfile() });
+  assert.equal(response.status, 413);
+  assert.match(JSON.stringify(await response.json()), /58.59 GiB.*50 GiB/);
+  assert.equal(records.size, 0);
+});
+
+test('stereo continues to reject selections exceeding 2,000 per camera', async () => {
+  setup();
+  const response = await createStereo(
+    { leftFolder: 'left', rightFolder: 'right', profile: rigProfile() }, { maxFiles: 2001 },
+  );
+  assert.equal(response.status, 400);
+  assert.equal(records.size, 0);
+});
+
 test('stereo diagnostics downloads are restricted to recorded artifacts', async () => {
   setup();
   const { job } = await (await create()).json();
@@ -368,4 +411,159 @@ test('stereo diagnostics downloads are restricted to recorded artifacts', async 
   };
   assert.equal((await worker.fetch(new Request(`https://test${result.rigProfileUrl}`), env)).status, 200);
   assert.equal((await worker.fetch(new Request(`https://test/v1/jobs/${job.id}/assets/other-profile.json`), env)).status, 404);
+});
+
+const stereoVideo = {
+  referenceCamera: 'B', intervalSeconds: 1, maxPairs: 50, jpegQuality: 2, reviewPairs: true,
+};
+const videoFiles = [{ name: 'GX010001.MP4', size: 20 }, { name: 'GX010001.MP4', size: 30 }];
+const createVideo = (options = {}) => create({
+  sourceFolder: undefined, stereoVideo, files: videoFiles, uploadProtocol: 'per-file', ...options,
+});
+
+test('stereo video only queues after both files have a verified size and checksum', async () => {
+  setup();
+  const response = await createVideo();
+  assert.equal(response.status, 201);
+  const { job, uploadSessionPath } = await response.json();
+  const record = records.get(`${job.id}/job.json`);
+  assert.deepEqual(record.files.map(file => file.name), ['camera-A.mp4', 'camera-B.mp4']);
+  assert.deepEqual(job.videoFiles, videoFiles.map(file => ({ ...file, verified: false })));
+  const storage = globalThis.__fullProjectStorage;
+  const existing = [{ id: 'camA', name: 'camera-A.mp4', size: 20, md5Checksum: 'a'.repeat(32) }];
+  storage.listFiles = async () => existing;
+  const start = (body) => worker.fetch(new Request(`https://test/v1/jobs/${job.id}/start`, {
+    method: 'POST', body,
+  }), { ...env, RUNPOD_ENDPOINT_ID: 'default' });
+  const session = (index) => worker.fetch(new Request(`https://test${uploadSessionPath}`, {
+    method: 'POST', body: JSON.stringify({ fileIndex: index }),
+  }), env);
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (url === 'https://drive.test/camera-b') {
+        assert.equal(init.headers['Content-Range'], 'bytes */30');
+        return new Response(null, { status: 308, headers: { Range: 'bytes=0-9' } });
+      }
+      assert.match(url, /\/default\/run$/);
+      calls++;
+      const saved = records.get(`${job.id}/job.json`);
+      assert.ok(saved.files.every(file => file.sourceMd5 && file.sourceId));
+      return Response.json({ id: `run-${calls}` });
+    };
+    storage.createBrowserUpload = async path => {
+      assert.ok(path.endsWith('/camera-B.mp4'));
+      return { uploadUrl: 'https://drive.test/camera-b', expiresAt: '2099-01-01T00:00:00Z' };
+    };
+    assert.equal((await start()).status, 409);
+    assert.equal(calls, 0);
+    assert.equal((await (await session(0)).json()).offset, 20);
+    assert.equal((await (await session(1)).json()).offset, 0);
+    assert.equal((await (await session(1)).json()).offset, 10);
+    const recovered = await worker.fetch(new Request(`https://test${uploadSessionPath}`), env);
+    assert.deepEqual(await recovered.json(), { offsets: [20, 10] });
+    existing.push({ id: 'camB', name: 'camera-B.mp4', size: 30, md5Checksum: 'b'.repeat(32) });
+    assert.equal((await start()).status, 202);
+    assert.equal(calls, 1);
+    const saved = records.get(`${job.id}/job.json`);
+    assert.equal(saved.videoUploads, undefined);
+    assert.equal(saved.stereoVideo.referenceCamera, 'B');
+    assert.ok(saved.stereoVideo.reviewPairs);
+    saved.state = 'review';
+    saved.pairCount = 3;
+    assert.equal((await start(JSON.stringify({ excluded: [1, 2] }))).status, 400);
+    assert.equal((await start(JSON.stringify({ excluded: [3] }))).status, 202);
+    assert.equal(calls, 2);
+    assert.deepEqual(records.get(`${job.id}/job.json`).excludedPairs, [3]);
+    assert.equal(records.get(`${job.id}/job.json`).reviewed, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('stereo video rejects invalid uploads and serves completed stages during processing', async () => {
+  setup();
+  for (const options of [
+    { files: videoFiles.slice(0, 1) },
+    { files: [{ ...videoFiles[0], name: 'image.jpg' }, videoFiles[1]] },
+    { stereoVideo: { ...stereoVideo, referenceCamera: 'left' } },
+    { stereoVideo: { ...stereoVideo, profile: {} } },
+  ]) {
+    assert.equal((await createVideo(options)).status, 400);
+  }
+  assert.equal(records.size, 0);
+  const { job } = await (await createVideo()).json();
+  const record = records.get(`${job.id}/job.json`);
+  record.state = 'running';
+  record.stageAssets = [{ stage: 'Stage 0', name: 'stage-0.tar.gz' }];
+  const detail = await worker.fetch(new Request(`https://test/v1/jobs/${job.id}`), env);
+  assert.equal((await detail.json()).stageAssets[0].url, `/v1/jobs/${job.id}/assets/stage-0.tar.gz`);
+  globalThis.__fullProjectStorage.readFile = async () => new Response('archive');
+  const asset = (name) => worker.fetch(new Request(`https://test/v1/jobs/${job.id}/assets/${name}`), env);
+  assert.equal((await asset('stage-0.tar.gz')).headers.get('Content-Disposition'), 'attachment; filename="stage-0.tar.gz"');
+  assert.equal((await asset('stage-1.tar.gz')).status, 404);
+});
+
+test('RunPod volume uploads, queues, downloads, and requires confirmation to purge', async () => {
+  setup();
+  const storage = globalThis.__fullProjectStorage;
+  storage.provider = 'runpod';
+  storage.publicRoot = 'openreef-jobs';
+  const files = new Map();
+  const parts = new Map();
+  storage.listFiles = async () => Array.from(files.values());
+  storage.beginVideo = async path => { parts.set(path, []); return path; };
+  storage.videoParts = async path => parts.get(path);
+  storage.putVideoPart = async (path, id, number, bytes) => {
+    assert.equal(id, path);
+    parts.get(path).push({ number, size: bytes.byteLength, etag: 'verified' });
+  };
+  storage.finishVideo = async (path, _, committed) => {
+    const name = path.split('/').at(-1);
+    files.set(name, { id: name, name, size: committed[0].size });
+  };
+  const previousRead = storage.readJson;
+  storage.readJson = async path => path.endsWith('/cleanup.json')
+    ? (await previousRead(path) ?? {}) : previousRead(path);
+  storage.readFile = async () => new Response('local bundle');
+  const { job } = await (await createVideo({ requireRunpod: true })).json();
+  const base = `https://test/v1/jobs/${job.id}`;
+  const localEnv = { ...env, RUNPOD_ENDPOINT_ID: 'default' };
+  const request = (path, method = 'GET', body, headers) =>
+    worker.fetch(new Request(base + path, { method, body, headers }), localEnv);
+  const originalFetch = globalThis.fetch;
+  const submitted = [];
+  globalThis.fetch = async (_, init) => {
+    submitted.push(JSON.parse(init.body).input);
+    return Response.json({ id: `remote-${submitted.length}` });
+  };
+  try {
+    assert.equal((await request('/start', 'POST')).status, 409);
+    for (const [fileIndex, file] of videoFiles.entries()) {
+      const session = await request('/uploads', 'POST', JSON.stringify({ fileIndex }));
+      assert.equal((await session.json()).offset, 0);
+      assert.equal((await request(`/uploads/${fileIndex}/2`, 'PUT', 'x', { 'Content-Length': '1' })).status, 400);
+      const upload = await request(`/uploads/${fileIndex}/1`, 'PUT', new Uint8Array(file.size),
+        { 'Content-Length': String(file.size) });
+      assert.equal((await upload.json()).offset, file.size);
+    }
+    assert.deepEqual(await (await request('/uploads')).json(), { offsets: [20, 30] });
+    assert.equal((await request('/start', 'POST')).status, 202);
+    assert.equal(submitted[0].volume_job, true);
+    const record = records.get(`${job.id}/job.json`);
+    record.state = 'completed';
+    record.result = { model: 'model.glb', manifest: 'manifest.json', bundle: 'openreef-results.tar' };
+    const download = await request('/assets/openreef-results.tar');
+    assert.match(download.headers.get('Content-Disposition'), /attachment/);
+    assert.equal(await download.text(), 'local bundle');
+    assert.equal((await request('/purge', 'POST', '{"localCopyVerified":false}')).status, 400);
+    assert.equal(submitted.length, 1);
+    const purge = await request('/purge', 'POST', '{"localCopyVerified":true}');
+    assert.equal(purge.status, 202);
+    assert.equal((await purge.json()).purging, true);
+    assert.equal(submitted[1].action, 'purge');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

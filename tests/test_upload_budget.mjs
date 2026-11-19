@@ -11,8 +11,10 @@ const compile = (source) => ts.transpileModule(source, { compilerOptions: {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
 } }).outputText;
 const dataUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-const storage = dataUrl(compile(readFileSync(new URL('../cloud/api/src/storage.ts', import.meta.url), 'utf8')));
-const api = compile(readFileSync(new URL('../cloud/api/src/index.ts', import.meta.url), 'utf8')).replace("'./storage'", JSON.stringify(storage));
+const storage = dataUrl(compile(readFileSync(new URL('../cloud/api/src/storage.ts', import.meta.url), 'utf8')
+  .replace(/^import .* from '\.\/runpod-storage';/m, 'class RunpodStorage {}')));
+const api = compile(readFileSync(new URL('../cloud/api/src/index.ts', import.meta.url), 'utf8')
+  .replace(/^import .* from '\.\/runpod-storage';/m, 'const VIDEO_PART_BYTES = 32 * 1024 * 1024;')).replace("'./storage'", JSON.stringify(storage));
 const { default: worker } = await import(dataUrl(api));
 
 test('actual Drive adapter stays within 50 subrequests for 1500-photo upload preparation', async () => {

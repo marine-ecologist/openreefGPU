@@ -163,7 +163,7 @@ new file mode 100644
 index 0000000..819fbe3
 --- /dev/null
 +++ b/src/openreef/pipeline/stereo.py
-@@ -0,0 +1,668 @@
+@@ -0,0 +1,672 @@
 +"""Timestamp pairing, reusable metric calibration, and COLMAP stereo rig preparation."""
 +
 +from __future__ import annotations
@@ -395,6 +395,7 @@ index 0000000..819fbe3
 +    overlap: int = 10,
 +    loop_interval: int = 50,
 +    loop_neighbors: int = 5,
++    link_sources: bool = False,
 +) -> Path:
 +    """Stage collision-free names, calibrated camera identities, frame and match manifests."""
 +    from PIL import Image
@@ -448,7 +449,10 @@ index 0000000..819fbe3
 +            name = f"{camera['id']}/frame_{index:08d}{suffix}"
 +            target = images / name
 +            target.parent.mkdir(parents=True, exist_ok=True)
-+            shutil.copy2(capture.path, target)
++            if link_sources:
++                target.symlink_to(capture.path.resolve())
++            else:
++                shutil.copy2(capture.path, target)
 +            names.append(
 +                {
 +                    "cameraId": camera["id"],

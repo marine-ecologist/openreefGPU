@@ -1,5 +1,7 @@
 # openreefGPU deployment
 
+This guide covers the legacy Drive-backed deployment. For new browser stereo-video jobs, see [RunPod volume deployment](docs/RUNPOD_VIDEO_VOLUME.md).
+
 The first deployment target uses a personal Google Drive account for durable storage:
 
 ```text
@@ -167,7 +169,7 @@ GOOGLE_REFRESH_TOKEN
 GOOGLE_DRIVE_ROOT_FOLDER_ID
 GOOGLE_DRIVE_JOB_ROOT=jobs
 OPENREEF_VERSION=0.6.5
-OPENREEF_GPU_VERSION=0.6.5-gpu.5
+OPENREEF_GPU_VERSION=0.6.5-gpu.11
 OPENREEF_BA_BACKEND=ceres
 OPENREEF_CERES_USE_GPU=1
 OPENREEF_BA_GPU_INDEX=-1
@@ -205,8 +207,8 @@ Record the Runpod endpoint ID and create a scoped Runpod API key for the broker.
 ## 3. Deploy the API broker
 
 `cloud/api/wrangler.jsonc` is already configured for Google Drive. Set `ALLOWED_ORIGINS` to the exact
-HTTPS frontend origin(s), comma separated. For local API work, copy `.dev.vars.example` to
-`.dev.vars` and enter the values printed by the authorization helper plus the Runpod values.
+HTTPS frontend origin(s), comma separated. For local API work, create `cloud/api/.dev.vars` with the Google Drive authorization values and
+the RunPod endpoint ID and API key listed below. Run `npm run dev` from `cloud/api`.
 
 For Cloudflare deployment, run from `openreefGPU/cloud/api`:
 

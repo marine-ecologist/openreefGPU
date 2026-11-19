@@ -1,5 +1,12 @@
+import { RunpodStorage } from './runpod-storage';
+
 export interface StorageEnv {
   STORAGE_PROVIDER?: string;
+  RUNPOD_S3_ENDPOINT?: string;
+  RUNPOD_VOLUME_ID?: string;
+  RUNPOD_S3_REGION?: string;
+  RUNPOD_S3_ACCESS_KEY?: string;
+  RUNPOD_S3_SECRET_KEY?: string;
   GRAPH_TENANT_ID?: string;
   GRAPH_CLIENT_ID?: string;
   GRAPH_CLIENT_SECRET?: string;
@@ -25,7 +32,7 @@ export interface BrowserUpload {
 }
 
 export interface Storage {
-  readonly provider: 'sharepoint' | 'google-drive';
+  readonly provider: 'sharepoint' | 'google-drive' | 'runpod';
   readonly publicRoot: string;
   listJobFolders?(cursor?: string): Promise<{ names: string[]; nextCursor?: string }>;
   ensureFolder(path: string): Promise<void>;
@@ -53,6 +60,7 @@ export function storageForEnv(env: StorageEnv): Storage {
   if (provider === 'google-drive' || provider === 'google') {
     return new GoogleDriveStorage(env);
   }
+  if (provider === 'runpod') return new RunpodStorage(env);
   if (provider === 'sharepoint') return new SharePointStorage(env);
   throw new StorageError(500, `Unsupported STORAGE_PROVIDER: ${provider}`);
 }

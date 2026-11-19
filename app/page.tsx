@@ -49,24 +49,24 @@ export default function Home() {
         <a className="runtime-card" href={`${basePath}/`} aria-label="RunPod Serverless — return to homepage">
           <Cloud aria-hidden="true" />
           <span>
-            <strong>RunPod Serverless</strong>
-            <small>Scale to zero</small>
+            <strong>Configure &amp; Run</strong>
+            <small>RunPod Serverless</small>
           </span>
         </a>
         <a
           className="runtime-card muted"
           href={`${basePath}/?projects=1`}
-          aria-label="Google Drive — browse past projects"
-          title="Browse saved projects and open models in the viewer"
+          aria-label="Browse RunPod job history"
+          title="Browse job status and local downloads"
         >
           <HardDrive aria-hidden="true" />
           <span>
-            <strong>Google Drive</strong>
-            <small>reefplot storage</small>
+            <strong>Job history</strong>
+            <small>RunPod network volume</small>
           </span>
         </a>
 
-        <p className="sidebar-version">OpenReefGPU v0.6.5-gpu.10</p>
+        <p className="sidebar-version">OpenReefGPU v0.6.5-gpu.12</p>
       </aside>
 
       <section

@@ -12,7 +12,7 @@ type SavedProject = {
   stage: string;
   createdAt: string;
   outputMode?: string;
-  result?: { modelUrl: string; projectUrl?: string };
+  result?: { bundleUrl?: string };
 };
 type ProjectPage = { jobs: SavedProject[]; nextCursor?: string; skipped: number };
 
@@ -37,8 +37,6 @@ export function PastProjects() {
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setError('');
     readPage(undefined, controller.signal).then((page) => {
       setProjects(page.jobs);
       setCursor(page.nextCursor);
@@ -73,11 +71,15 @@ export function PastProjects() {
   return (
     <div className="cloud-workspace">
       <section className="cloud-card" aria-labelledby="projects-title">
-        <p className="eyebrow">Google Drive · reefplot storage</p>
+        <p className="eyebrow">RunPod network volume</p>
         <h1 id="projects-title">Past projects</h1>
-        <p className="cloud-lead">Select a saved project to view its model. Browsing and viewing use no GPU compute.</p>
+        <p className="cloud-lead">Select a saved job to view its progress, logs and downloads. Purged jobs retain a history entry.</p>
         <div className="past-project-actions">
-          <button type="button" disabled={loading} onClick={() => setRefresh((value) => value + 1)}>Refresh projects</button>
+          <button type="button" disabled={loading} onClick={() => {
+            setLoading(true);
+            setError('');
+            setRefresh(value => value + 1);
+          }}>Refresh projects</button>
           <a href={`${basePath}/`}>New reconstruction</a>
         </div>
         {error && <p className="cloud-error" role="alert">{error}</p>}
@@ -96,21 +98,19 @@ export function PastProjects() {
               </table>
             </div>
           )}
-          {loading && <p role="status">Loading projects…</p>}
+          {loading && <output>Loading projects…</output>}
           {!loading && !error && projects.length === 0 && <p>No saved projects found on this page.</p>}
           {cursor && <button type="button" disabled={loading} onClick={loadMore}>Load more projects</button>}
         </div>
-        {skipped > 0 && <p role="status">{skipped} folders had missing or unreadable job records.</p>}
+        {skipped > 0 && <output>{skipped} folders had missing or unreadable job records.</output>}
         {selected && (
           <section className="past-project-details" aria-label="Selected project">
             <h2>{selected.name}</h2>
             <p>{selected.stage} · {selected.outputMode === 'full' ? 'Full project' : 'Compact output'}</p>
-            {selected.state === 'completed' && selected.result?.modelUrl ? (
-              <div className="past-project-actions">
-                <a href={`${basePath}/?job=${encodeURIComponent(selected.id)}`} target="_blank" rel="noopener noreferrer">Open in viewer ↗</a>
-                {selected.result.projectUrl && <a href={`${apiUrl}${selected.result.projectUrl}`} download="full-project.tar.gz">Download full project</a>}
-              </div>
-            ) : <p>A completed model is required to open this project in the viewer.</p>}
+            <div className="past-project-actions">
+              <a href={`${basePath}/?job=${encodeURIComponent(selected.id)}`}>Open job details</a>
+              {selected.result?.bundleUrl && <a href={`${apiUrl}${selected.result.bundleUrl}`} download="openreef-results.tar">Download results</a>}
+            </div>
           </section>
         )}
       </section>

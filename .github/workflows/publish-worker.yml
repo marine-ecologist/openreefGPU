@@ -3,6 +3,14 @@ name: Publish RunPod worker image
 on:
   workflow_dispatch:
     inputs:
+      image_tag:
+        description: Optional separate image tag (does not update latest)
+        type: string
+        default: ""
+      volume_overlay:
+        description: Reuse the deployed volume image for worker-only changes
+        type: boolean
+        default: false
       reuse_native_image:
         description: Reuse the verified native worker image for a core/adapter-only release
         type: boolean
@@ -68,6 +76,39 @@ jobs:
           GPU_VERSION=$(node -p "require('./versions.json').openreefGPU.version")
           printf 'gpu_version=%s\n' "$GPU_VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Select image tags
+        id: image
+        env:
+          CUSTOM_TAG: ${{ inputs.image_tag }}
+          GPU_VERSION: ${{ steps.versions.outputs.gpu_version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ -n "$CUSTOM_TAG" ]; then
+            [[ "$CUSTOM_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || exit 1
+            echo "tags=ghcr.io/$OWNER/openreef-gpu:$CUSTOM_TAG" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'tags<<END_TAGS'
+              echo "ghcr.io/$OWNER/openreef-gpu:$GPU_VERSION"
+              echo "ghcr.io/$OWNER/openreef-gpu:latest"
+              echo 'END_TAGS'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test direct volume inputs before publishing
+        run: |
+          node scripts/fetch-pinned-openreef.mjs .upstream/openreef
+          git -C .upstream/openreef apply --check ../../worker/patches/openreef-stereo.patch
+          git -C .upstream/openreef apply ../../worker/patches/openreef-stereo.patch
+          python -m pip install -r worker/requirements-dev.txt
+          python -m pip install --no-deps .upstream/openreef
+          ruff check worker tests/test_volume_worker.py tests/test_joint_worker.py tests/test_stereo_video.py
+          pytest -q tests/test_joint_worker.py tests/test_volume_worker.py tests/test_worker.py tests/test_stereo_worker.py tests/test_stereo_video.py tests/test_full_project.py tests/test_diagnostics.py
+
       - name: Sign in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -82,12 +123,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ inputs.reuse_native_image && 'worker/Dockerfile.release' || 'worker/Dockerfile' }}
+          file: ${{ inputs.volume_overlay && 'worker/Dockerfile.volume' || inputs.reuse_native_image && 'worker/Dockerfile.release' || 'worker/Dockerfile' }}
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/openreef-gpu:${{ steps.versions.outputs.gpu_version }}
-            ghcr.io/${{ github.repository_owner }}/openreef-gpu:latest
+          tags: ${{ steps.image.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
