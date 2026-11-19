@@ -39,7 +39,7 @@ export class RunpodStorage implements Storage {
     const url = new URL(this.endpoint);
     if (path) url.pathname += '/' + path.split('/').map(encodeURIComponent).join('/');
     url.search = new URLSearchParams(query).toString();
-    return this.client.fetch(url, { ...init, method, redirect: 'error' });
+    return this.client.fetch(url, { ...init, method, redirect: 'manual' });
   }
 
   private async checked(response: Promise<Response>) {

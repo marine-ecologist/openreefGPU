@@ -784,7 +784,20 @@ async function getJob(jobId: string, env: Env) {
     job.runpodJobId &&
     !['completed', 'failed', 'cancelled', 'review', 'purged'].includes(job.state)
   ) {
-    const status = await runpodStatus(env, job.runpodJobId, job.runpodEndpointId);
+    let status: Awaited<ReturnType<typeof runpodStatus>>;
+    try {
+      status = await runpodStatus(env, job.runpodJobId, job.runpodEndpointId);
+    } catch (error) {
+      if (!job.stereoVideo || !(error instanceof HttpError) || error.status !== 404) throw error;
+      const lastSaved = await readJob(env, jobId);
+      if (['completed', 'failed', 'cancelled', 'review', 'purged'].includes(lastSaved.state)) {
+        return publicJob(lastSaved, env);
+      }
+      return publicJob({
+        ...lastSaved,
+        error: 'RunPod no longer returns status for this attempt. Showing the last saved stage and downloads.',
+      }, env, true);
+    }
     const state = mapRunpodState(status.status);
     if (state && state !== job.state && (!job.stereoVideo || ['completed', 'failed', 'cancelled'].includes(state))) {
       // The GPU worker writes richer stage/progress updates. Only persist a
@@ -796,9 +809,14 @@ async function getJob(jobId: string, env: Env) {
         job.progress =
           state === 'running' ? Math.max(job.progress, 3) : job.progress;
         if (state === 'failed')
-          job.error = status.error || 'GPU processing failed';
+          job.error = runpodErrorMessage(status.error);
         job.updatedAt = new Date().toISOString();
-        await writeJob(env, job);
+        try {
+          await writeJob(env, job);
+        } catch (error) {
+          if (!job.stereoVideo || state !== 'failed') throw error;
+          console.warn('Could not persist terminal RunPod job state', job.id);
+        }
       }
     }
   }
@@ -892,6 +910,17 @@ async function proxyAsset(
   });
 }
 
+function runpodErrorMessage(error?: string) {
+  if (!error) return 'GPU processing failed';
+  try {
+    const detail = JSON.parse(error) as { error_message?: unknown };
+    if (typeof detail?.error_message === 'string') return detail.error_message;
+  } catch {
+    // RunPod also returns plain-text errors.
+  }
+  return error;
+}
+
 async function runpodStatus(env: Env, id: string, endpointId = env.RUNPOD_ENDPOINT_ID) {
   const response = await fetch(
     `${RUNPOD_ROOT}/${endpointId}/status/${id}`,
@@ -899,10 +928,10 @@ async function runpodStatus(env: Env, id: string, endpointId = env.RUNPOD_ENDPOI
       headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` },
     },
   );
-  const payload = await response.json<{ status?: string; error?: string }>();
+  if (response.status === 404) throw new HttpError(404, 'RunPod job status is no longer available');
   if (!response.ok)
     throw new HttpError(502, 'Could not read Runpod job status');
-  return payload;
+  return response.json<{ status?: string; error?: string }>();
 }
 
 function mapRunpodState(value?: string): JobState | undefined {
@@ -923,11 +952,12 @@ function mapRunpodState(value?: string): JobState | undefined {
   }
 }
 
-function publicJob(job: JobRecord, env: Env) {
+function publicJob(job: JobRecord, env: Env, statusUnavailable = false) {
   const assetBase = `/v1/jobs/${job.id}/assets`;
   const storage = storageForEnv(env);
   return {
     id: job.id,
+    ...(statusUnavailable ? { statusUnavailable: true } : {}),
     name: job.name,
     state: job.state,
     stage: job.purgeJobId ? 'Purging RunPod files' : job.stage,

@@ -36,6 +36,7 @@ type CloudJob = {
     | 'cancelled'
     | 'purged';
   purging?: boolean;
+  statusUnavailable?: boolean;
   stage: string;
   progress: number;
   error?: string;
@@ -181,7 +182,7 @@ export function CloudJobs() {
   }, [job]);
 
   useEffect(() => {
-    if (!job || !['queued', 'running'].includes(job.state)) return;
+    if (!job || job.statusUnavailable || !['queued', 'running'].includes(job.state)) return;
     const timer = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [job]);
@@ -467,9 +468,9 @@ export function CloudJobs() {
             <div className="cloud-status-line">
               {['completed', 'purged'].includes(job.state) && !job.purging ? (
                 <Check />
-              ) : (
+              ) : !job.statusUnavailable && (job.purging || submitting || ['queued', 'running'].includes(job.state)) ? (
                 <LoaderCircle className="spin" />
-              )}
+              ) : null}
               <div>
                 <strong>{job.stage}</strong>
                 <small>
@@ -529,7 +530,7 @@ export function CloudJobs() {
                   </div>
                   <span>
                     Total{' '}
-                    {formatDuration(liveTimingSeconds(timings.total, clock))}
+                    {formatDuration(job.statusUnavailable ? timings.total.elapsedSeconds : liveTimingSeconds(timings.total, clock))}
                   </span>
                 </div>
                 <ol>
@@ -541,7 +542,7 @@ export function CloudJobs() {
                       <i aria-hidden="true" />
                       <strong>{step.name ?? `Step ${index + 1}`}</strong>
                       <time>
-                        {formatDuration(liveTimingSeconds(step, clock))}
+                        {formatDuration(job.statusUnavailable ? step.elapsedSeconds : liveTimingSeconds(step, clock))}
                       </time>
                     </li>
                   ))}

@@ -1284,6 +1284,7 @@ def stage_video_source(storage, job_root, job, dataset, source_folder, report):
                 selected / "right",
                 dataset,
                 profile,
+                **({"link_sources": True} if isinstance(storage, VolumeJobStorage) else {}),
                 timestamps={
                     camera["id"]: stamps[side]
                     for camera, side in zip(profile["cameras"], ("left", "right"), strict=True)
